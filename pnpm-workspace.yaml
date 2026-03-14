@@ -1,0 +1,26 @@
+packages:
+  - apps/*
+  - packages/*
+  - tools/*
+
+catalog:
+  "@larksuiteoapi/node-sdk": ^1.59.0
+  "@types/node": ^24
+  "@zed-industries/codex-acp": ^0.9.5
+  tsx: ^4.21.0
+  typescript: ^5
+  vite: npm:@voidzero-dev/vite-plus-core@latest
+  vite-plus: latest
+  vitest: npm:@voidzero-dev/vite-plus-test@latest
+
+catalogMode: prefer
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
