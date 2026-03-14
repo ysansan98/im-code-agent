@@ -95,12 +95,8 @@ export class AgentProcess {
     const command = resolveAgentCommand(this.config, agent);
     const checkedAt = new Date().toISOString();
     const notes: string[] = [];
-    let commandAvailable = true;
-
-    try {
-      await access(command.command);
-    } catch {
-      commandAvailable = false;
+    const commandAvailable = await this.isCommandAvailable(command.command);
+    if (!commandAvailable) {
       notes.push(`Command is not accessible: ${command.command}`);
     }
 
@@ -197,6 +193,8 @@ export class AgentProcess {
     });
 
     child.on("error", (error) => {
+      this.rejectAllPendingRequests(options.taskId, `agent process spawn failed: ${error.message}`);
+      this.#children.delete(options.taskId);
       this.logger.error("agent process error", {
         taskId: options.taskId,
         error: error.message,
@@ -252,6 +250,22 @@ export class AgentProcess {
       initialization,
       sessionId,
     };
+  }
+
+  private async isCommandAvailable(command: string): Promise<boolean> {
+    if (command.includes("/")) {
+      try {
+        await access(command);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    const result = spawnSync("which", [command], {
+      stdio: "ignore",
+    });
+    return result.status === 0;
   }
 
   async stop(taskId: string): Promise<void> {

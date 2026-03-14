@@ -1,5 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { BridgeConfig } from "@im-code-agent/shared";
@@ -9,6 +11,29 @@ const CODEX_ACP_BIN = fileURLToPath(
 );
 
 type EnvMap = Record<string, string>;
+const DEFAULT_CONFIG_ENV_PATH = resolve(homedir(), ".im-code-agent", "config.env");
+
+const DEFAULT_CONFIG_ENV_CONTENT = `# Bridge 基础配置
+BRIDGE_DEVICE_ID=local-dev
+BRIDGE_DEBUG_PORT=8788
+
+# 飞书应用凭据
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+
+# 可选：开启事件加密/校验时配置
+FEISHU_ENCRYPT_KEY=
+FEISHU_VERIFICATION_TOKEN=
+
+# 可选：默认工作目录，不填则使用 bridge 启动目录
+WORKSPACE_DEFAULT_CWD=
+
+# 可选：ask | read-auto | read-write-auto
+WORKSPACE_APPROVAL_MODE=ask
+
+# 可选：云端桥接 ws 地址（不使用可留空）
+BRIDGE_WS_URL=
+`;
 
 function parseEnvFile(content: string): EnvMap {
   const result: EnvMap = {};
@@ -35,11 +60,33 @@ function parseEnvFile(content: string): EnvMap {
   return result;
 }
 
+async function resolveNodeCommand(): Promise<string> {
+  if (await fileExists(process.execPath)) {
+    return process.execPath;
+  }
+  return "node";
+}
+
+async function isDirectory(dirPath: string): Promise<boolean> {
+  try {
+    const directoryStat = await stat(dirPath);
+    return directoryStat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function loadBridgeEnvFile(): Promise<EnvMap> {
   const configuredPath = process.env.BRIDGE_ENV_PATH;
+  const envPath = configuredPath ? resolve(configuredPath) : DEFAULT_CONFIG_ENV_PATH;
+  await ensureDefaultConfigEnvFile(envPath);
   const envPaths = configuredPath
     ? [resolve(configuredPath)]
-    : [resolve(process.cwd(), "bridge.env"), resolve(process.cwd(), ".env")];
+    : [
+        DEFAULT_CONFIG_ENV_PATH,
+        resolve(process.cwd(), "bridge.env"),
+        resolve(process.cwd(), ".env"),
+      ];
 
   for (const envPath of envPaths) {
     try {
@@ -52,13 +99,51 @@ async function loadBridgeEnvFile(): Promise<EnvMap> {
   return {};
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDefaultConfigEnvFile(configEnvPath: string): Promise<void> {
+  await createConfigEnvIfMissing(configEnvPath, process.cwd());
+}
+
+async function createConfigEnvIfMissing(targetPath: string, baseDir: string): Promise<void> {
+  if (await fileExists(targetPath)) {
+    return;
+  }
+
+  await mkdir(dirname(targetPath), { recursive: true });
+
+  const configTemplatePath = resolve(baseDir, "config.env.example");
+  if (await fileExists(configTemplatePath)) {
+    await copyFile(configTemplatePath, targetPath);
+    return;
+  }
+
+  const legacyTemplatePath = resolve(baseDir, "bridge.env.example");
+  if (await fileExists(legacyTemplatePath)) {
+    await copyFile(legacyTemplatePath, targetPath);
+    return;
+  }
+
+  await writeFile(targetPath, DEFAULT_CONFIG_ENV_CONTENT, "utf8");
+}
+
 export async function loadConfig(): Promise<BridgeConfig> {
+  const nodeCommand = await resolveNodeCommand();
   const fileEnv = await loadBridgeEnvFile();
   const getValue = (key: string): string | undefined => process.env[key] ?? fileEnv[key];
 
   const appId = getValue("FEISHU_APP_ID");
   const appSecret = getValue("FEISHU_APP_SECRET");
-  const defaultCwd = resolve(getValue("WORKSPACE_DEFAULT_CWD") ?? process.cwd());
+  const workspaceDefaultCwd = getValue("WORKSPACE_DEFAULT_CWD")?.trim();
+  const resolvedDefaultCwd = workspaceDefaultCwd ? resolve(workspaceDefaultCwd) : process.cwd();
+  const defaultCwd = (await isDirectory(resolvedDefaultCwd)) ? resolvedDefaultCwd : process.cwd();
   const approvalMode =
     (getValue("WORKSPACE_APPROVAL_MODE") as "ask" | "read-auto" | "read-write-auto" | undefined) ??
     "ask";
@@ -80,7 +165,7 @@ export async function loadConfig(): Promise<BridgeConfig> {
         : undefined,
     agents: {
       codex: {
-        command: process.execPath,
+        command: nodeCommand,
         args: [CODEX_ACP_BIN],
       },
     },

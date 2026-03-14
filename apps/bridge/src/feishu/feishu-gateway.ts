@@ -76,11 +76,21 @@ export class FeishuGateway {
 
   async start(): Promise<void> {
     const persisted = await this.#chatStateStore.loadState();
+    let sanitized = false;
+    const fallbackCwd = this.workspaces[0]?.cwd;
     for (const [chatId, cwd] of persisted.chatCwds.entries()) {
-      this.#chatCwds.set(chatId, cwd);
+      if (await this.isDirectory(cwd)) {
+        this.#chatCwds.set(chatId, cwd);
+      } else if (fallbackCwd) {
+        this.#chatCwds.set(chatId, fallbackCwd);
+        sanitized = true;
+      }
     }
     for (const [chatId, sessionId] of persisted.chatSessionIds.entries()) {
       this.#chatSessionIds.set(chatId, sessionId);
+    }
+    if (sanitized) {
+      await this.persistChatState();
     }
 
     await this.#wsClient.start({
@@ -175,7 +185,7 @@ export class FeishuGateway {
       return;
     }
 
-    const workspace = this.resolveWorkspace(data.message.chat_id);
+    const workspace = await this.resolveValidatedWorkspace(data.message.chat_id);
     if (!workspace) {
       await this.sendText(data.message.chat_id, "未配置可用工作区。");
       return;
@@ -410,9 +420,36 @@ export class FeishuGateway {
     };
   }
 
+  private async resolveValidatedWorkspace(chatId: string): Promise<WorkspaceConfig | undefined> {
+    const workspace = this.resolveWorkspace(chatId);
+    if (!workspace) {
+      return undefined;
+    }
+    if (await this.isDirectory(workspace.cwd)) {
+      return workspace;
+    }
+
+    const fallback = this.workspaces[0];
+    if (!fallback) {
+      return workspace;
+    }
+    await this.setChatCwd(chatId, fallback.cwd);
+    this.#chatSessionIds.delete(chatId);
+    await this.persistChatState();
+    return {
+      ...fallback,
+      cwd: fallback.cwd,
+    };
+  }
+
   private async setChatCwd(chatId: string, cwd: string): Promise<void> {
     this.#chatCwds.set(chatId, cwd);
     await this.persistChatState();
+  }
+
+  private async isDirectory(path: string): Promise<boolean> {
+    const dirStat = await stat(path).catch(() => undefined);
+    return Boolean(dirStat?.isDirectory());
   }
 
   private async persistChatState(): Promise<void> {

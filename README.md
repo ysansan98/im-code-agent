@@ -43,7 +43,7 @@ curl -X POST http://127.0.0.1:8788/debug/tasks \
 
 当前已集成飞书官方 Node SDK（`@larksuiteoapi/node-sdk`）的 WebSocket 事件接收。
 
-推荐使用本地配置文件 `apps/bridge/bridge.env`（`.env` 风格，支持注释）：
+推荐使用运行时配置文件 `~/.im-code-agent/config.env`（`.env` 风格，支持注释）：
 
 ```bash
 # Bridge 基础配置
@@ -59,7 +59,7 @@ FEISHU_ENCRYPT_KEY=
 FEISHU_VERIFICATION_TOKEN=
 
 # 可选：默认工作目录，不填则使用 bridge 启动目录
-WORKSPACE_DEFAULT_CWD=/Users/you/workspace
+WORKSPACE_DEFAULT_CWD=
 
 # 可选：ask | read-auto | read-write-auto
 WORKSPACE_APPROVAL_MODE=ask
@@ -70,7 +70,7 @@ BRIDGE_WS_URL=
 
 也支持环境变量覆盖（优先级高于配置文件）：
 
-默认按顺序查找：`bridge.env` → `.env`，也可用 `BRIDGE_ENV_PATH` 指定文件。
+默认读取 `~/.im-code-agent/config.env`（首次启动自动创建），也可用 `BRIDGE_ENV_PATH` 指定文件。兼容读取当前目录的 `bridge.env` / `.env`。
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
