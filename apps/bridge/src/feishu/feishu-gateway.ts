@@ -1,6 +1,3 @@
-import { stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
-
 import lark from "@larksuiteoapi/node-sdk";
 import type {
   ApprovalDecision,
@@ -12,35 +9,28 @@ import type {
 
 import type { ApprovalSnapshot } from "../approval/approval-store.ts";
 import { ApprovalGateway } from "../approval/approval-gateway.ts";
-import { shouldPatchApprovalSummary } from "./approval-card-policy.ts";
-import { ChatStateStore } from "./chat-state-store.ts";
-import { TaskRunner } from "../session/task-runner.ts";
+import type { TaskRunner } from "../session/task-runner.ts";
 import type { Logger } from "../utils/logger.ts";
+import { shouldPatchApprovalSummary } from "./approval-card-policy.ts";
+import {
+  isInterruptCommand,
+  parseCardActionValue,
+  parseContent,
+  parseUserCommand,
+} from "./command-router.ts";
+import { FeishuCardRenderer, TaskCardStreamer } from "./card-renderer.ts";
+import { MessageEntryQueue } from "./message-entry-queue.ts";
+import { FeishuSessionController } from "./session-controller.ts";
 
-type FeishuMessageContent = {
-  text?: string;
+type IncomingMessage = {
+  sender: { sender_type: string };
+  message: {
+    message_id: string;
+    chat_id: string;
+    message_type: string;
+    content: string;
+  };
 };
-
-type ToolView = {
-  id: string;
-  name?: string;
-  status?: string;
-  cmd?: string;
-  query?: string;
-  url?: string;
-  path?: string;
-  error?: string;
-};
-
-type ContentSegment =
-  | {
-      type: "text";
-      content: string;
-    }
-  | {
-      type: "tool";
-      id: string;
-    };
 
 type ApprovalCardBinding = {
   chatId: string;
@@ -48,31 +38,25 @@ type ApprovalCardBinding = {
   taskId: string;
 };
 
-function isInterruptCommand(text: string): boolean {
-  return text === "/stop" || text === "/interrupt";
-}
-
 export class FeishuGateway {
   readonly #client: lark.Client;
   readonly #wsClient: lark.WSClient;
   readonly #eventDispatcher: lark.EventDispatcher;
-  readonly #processingMessageIds = new Set<string>();
-  readonly #handledMessageIds = new Map<string, number>();
-  readonly #dedupeTtlMs = 10 * 60 * 1000;
-  readonly #patchMinIntervalMs = 280;
-  readonly #chatQueues = new Map<string, Promise<void>>();
-  readonly #chatCwds = new Map<string, string>();
-  readonly #chatSessionIds = new Map<string, string>();
+  readonly #messageQueue = new MessageEntryQueue();
+  readonly #sessionController: FeishuSessionController;
+  readonly #cardRenderer = new FeishuCardRenderer();
   readonly #approvalCards = new Map<string, ApprovalCardBinding>();
-  readonly #chatStateStore = new ChatStateStore();
+  readonly #patchMinIntervalMs = 280;
 
   constructor(
-    private readonly config: FeishuConfig,
-    private readonly workspaces: WorkspaceConfig[],
+    config: FeishuConfig,
+    workspaces: WorkspaceConfig[],
     private readonly taskRunner: TaskRunner,
     private readonly approvalGateway: ApprovalGateway,
     private readonly logger: Logger,
   ) {
+    this.#sessionController = new FeishuSessionController(workspaces);
+
     this.#client = new lark.Client({
       appId: config.appId,
       appSecret: config.appSecret,
@@ -90,7 +74,7 @@ export class FeishuGateway {
     })
       .register({
         "im.message.receive_v1": async (data) => {
-          await this.handleIncomingMessage(data);
+          await this.handleIncomingMessage(data as IncomingMessage);
         },
       })
       .register({});
@@ -112,55 +96,25 @@ export class FeishuGateway {
   }
 
   async start(): Promise<void> {
-    const persisted = await this.#chatStateStore.loadState();
-    let sanitized = false;
-    const fallbackCwd = this.workspaces[0]?.cwd;
-    for (const [chatId, cwd] of persisted.chatCwds.entries()) {
-      if (await this.isDirectory(cwd)) {
-        this.#chatCwds.set(chatId, cwd);
-      } else if (fallbackCwd) {
-        this.#chatCwds.set(chatId, fallbackCwd);
-        sanitized = true;
-      }
-    }
-    for (const [chatId, sessionId] of persisted.chatSessionIds.entries()) {
-      this.#chatSessionIds.set(chatId, sessionId);
-    }
-    if (sanitized) {
-      await this.persistChatState();
-    }
+    const restored = await this.#sessionController.restore();
 
     await this.#wsClient.start({
       eventDispatcher: this.#eventDispatcher,
     });
-    this.logger.info("feishu gateway started", {
-      persistedChats: this.#chatCwds.size,
-      persistedSessions: this.#chatSessionIds.size,
-    });
+    this.logger.info("feishu gateway started", restored);
   }
 
-  private async handleIncomingMessage(data: {
-    sender: { sender_type: string };
-    message: {
-      message_id: string;
-      chat_id: string;
-      message_type: string;
-      content: string;
-    };
-  }): Promise<void> {
-    this.gcHandledMessageIds();
+  private async handleIncomingMessage(data: IncomingMessage): Promise<void> {
+    this.#messageQueue.gcHandledMessageIds();
 
     const messageId = data.message.message_id;
-    if (this.#handledMessageIds.has(messageId) || this.#processingMessageIds.has(messageId)) {
-      this.logger.info("feishu duplicate message ignored", { messageId });
-      return;
-    }
-
     if (data.message.message_type === "text") {
-      const content = this.parseContent(data.message.content);
-      const text = (content.text ?? "").trim();
+      const text = (parseContent(data.message.content).text ?? "").trim();
       if (isInterruptCommand(text)) {
-        this.#processingMessageIds.add(messageId);
+        if (!this.#messageQueue.tryBegin(messageId)) {
+          this.logger.info("feishu duplicate message ignored", { messageId });
+          return;
+        }
         void this.processInterruptCommand(data.message.chat_id)
           .catch((error) => {
             this.logger.error("feishu interrupt failed", {
@@ -169,372 +123,216 @@ export class FeishuGateway {
             });
           })
           .finally(() => {
-            this.#processingMessageIds.delete(messageId);
-            this.#handledMessageIds.set(messageId, Date.now());
+            this.#messageQueue.complete(messageId);
           });
         return;
       }
     }
 
-    this.#processingMessageIds.add(messageId);
-    const chatId = data.message.chat_id;
-    const queue = (this.#chatQueues.get(chatId) ?? Promise.resolve())
-      .catch(() => {
-        return;
-      })
-      .then(async () => {
-        await this.processMessage(data);
-      });
+    const queue = this.#messageQueue.runInChatQueue(data.message.chat_id, messageId, async () => {
+      await this.processMessage(data);
+    });
 
-    this.#chatQueues.set(chatId, queue);
+    if (!queue) {
+      this.logger.info("feishu duplicate message ignored", { messageId });
+      return;
+    }
 
-    void queue
-      .catch((error) => {
-        this.logger.error("feishu message process failed", {
-          messageId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        this.#processingMessageIds.delete(messageId);
-        this.#handledMessageIds.set(messageId, Date.now());
-        if (this.#chatQueues.get(chatId) === queue) {
-          this.#chatQueues.delete(chatId);
-        }
+    void queue.catch((error) => {
+      this.logger.error("feishu message process failed", {
+        messageId,
+        error: error instanceof Error ? error.message : String(error),
       });
+    });
   }
 
-  private async processMessage(data: {
-    sender: { sender_type: string };
-    message: {
-      message_id: string;
-      chat_id: string;
-      message_type: string;
-      content: string;
-    };
-  }): Promise<void> {
+  private async processMessage(data: IncomingMessage): Promise<void> {
     if (data.sender.sender_type !== "user") {
       return;
     }
 
+    const chatId = data.message.chat_id;
     if (data.message.message_type !== "text") {
-      await this.sendText(data.message.chat_id, "只支持文本消息。");
+      await this.sendText(chatId, "只支持文本消息。");
       return;
     }
 
-    const workspace = await this.resolveValidatedWorkspace(data.message.chat_id);
+    const workspace = await this.#sessionController.resolveValidatedWorkspace(chatId);
     if (!workspace) {
-      await this.sendText(data.message.chat_id, "未配置可用工作区。");
+      await this.sendText(chatId, "未配置可用工作区。");
       return;
     }
 
-    const content = this.parseContent(data.message.content);
-    const rawPrompt = (content.text ?? "").trim();
+    const rawPrompt = (parseContent(data.message.content).text ?? "").trim();
     if (!rawPrompt) {
-      await this.sendText(data.message.chat_id, "消息内容为空。");
+      await this.sendText(chatId, "消息内容为空。");
       return;
     }
 
-    let command:
-      | {
-          type: "prompt";
-          prompt: string;
-        }
-      | {
-          type: "new";
-          cwd?: string;
-        };
+    let command;
     try {
-      command = await this.parseUserCommand(rawPrompt, workspace.cwd);
+      command = await parseUserCommand(rawPrompt, workspace.cwd);
     } catch (error) {
       await this.sendText(
-        data.message.chat_id,
+        chatId,
         `命令解析失败：${error instanceof Error ? error.message : String(error)}`,
       );
       return;
     }
+
     if (command.type === "new") {
-      await this.taskRunner.resetConversation(data.message.chat_id);
-      this.#chatSessionIds.delete(data.message.chat_id);
-      let nextWorkspace = workspace;
-      if (command.cwd) {
-        await this.setChatCwd(data.message.chat_id, command.cwd);
-        nextWorkspace = {
-          ...workspace,
+      const next = await this.#sessionController.startNewConversation(
+        {
+          chatId,
+          workspace,
+          agent: "codex",
           cwd: command.cwd,
-        };
-      } else {
-        await this.setChatCwd(data.message.chat_id, workspace.cwd);
-      }
-      const conversation = await this.taskRunner.ensureConversation(
-        data.message.chat_id,
-        nextWorkspace,
-        "codex",
+        },
+        this.taskRunner,
       );
-      this.#chatSessionIds.set(data.message.chat_id, conversation.sessionId);
-      await this.persistChatState();
+
       await this.sendText(
-        data.message.chat_id,
-        `已切换到新会话，session_id: ${conversation.sessionId}\n工作目录：${nextWorkspace.cwd}`,
+        chatId,
+        `已切换到新会话，session_id: ${next.sessionId}\n工作目录：${next.workspace.cwd}`,
       );
       return;
     }
 
-    const prompt = command.prompt;
+    await this.runConversationTask({
+      chatId,
+      messageId: data.message.message_id,
+      workspace,
+      prompt: command.prompt,
+    });
+  }
 
-    const segments: ContentSegment[] = [];
-    let status: "running" | "completed" | "failed" = "running";
-    let summary = "执行中";
-    const tools = new Map<string, ToolView>();
-    let lastPatchedAt = 0;
-    let pendingPatchTimer: NodeJS.Timeout | undefined;
-    let patchQueue = Promise.resolve();
-    let cardMessageId: string | undefined;
-    let typingReactionId: string | undefined;
-    typingReactionId = await this.addTypingReaction(data.message.message_id);
+  private async runConversationTask(params: {
+    chatId: string;
+    messageId: string;
+    workspace: WorkspaceConfig;
+    prompt: string;
+  }): Promise<void> {
+    const streamer = new TaskCardStreamer({
+      chatId: params.chatId,
+      logger: this.logger,
+      renderer: this.#cardRenderer,
+      sendCard: async (chatId, card) => this.sendCard(chatId, card),
+      patchCard: async (messageId, card) => this.patchCard(messageId, card),
+      patchMinIntervalMs: this.#patchMinIntervalMs,
+    });
 
-    const ensureCardMessage = async (): Promise<string | undefined> => {
-      if (cardMessageId) {
-        return cardMessageId;
-      }
-      if (status === "running" && segments.length === 0) {
-        return undefined;
-      }
-      cardMessageId = await this.sendCard(
-        data.message.chat_id,
-        this.buildCard({
-          status,
-          segments,
-          tools,
-          summary,
-        }),
-      );
-      return cardMessageId;
-    };
-
-    const enqueuePatch = (force: boolean): void => {
-      const now = Date.now();
-      const wait = force ? 0 : Math.max(0, this.#patchMinIntervalMs - (now - lastPatchedAt));
-      if (!force && pendingPatchTimer) {
-        return;
-      }
-
-      if (pendingPatchTimer) {
-        clearTimeout(pendingPatchTimer);
-        pendingPatchTimer = undefined;
-      }
-
-      pendingPatchTimer = setTimeout(() => {
-        pendingPatchTimer = undefined;
-        lastPatchedAt = Date.now();
-        patchQueue = patchQueue
-          .then(async () => {
-            const messageId = await ensureCardMessage();
-            if (!messageId) {
-              return;
-            }
-            await this.patchCard(
-              messageId,
-              this.buildCard({
-                status,
-                segments,
-                tools,
-                summary,
-              }),
-            );
-          })
-          .catch((error) => {
-            this.logger.warn("feishu patch card failed", {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-      }, wait);
-    };
+    let typingReactionId: string | undefined = await this.addTypingReaction(params.messageId);
 
     const result = await this.taskRunner.startConversationTask(
-      data.message.chat_id,
+      params.chatId,
       {
-        workspaceId: workspace.id,
+        workspaceId: params.workspace.id,
         agent: "codex",
-        prompt,
+        prompt: params.prompt,
       },
-      workspace,
+      params.workspace,
       {
-        resumeSessionId: this.#chatSessionIds.get(data.message.chat_id),
+        resumeSessionId: this.#sessionController.getResumeSessionId(params.chatId),
         onEvent: (event) => {
-          if (event.type === "task.output") {
-            const toolUpdate = this.parseToolChunk(event.chunk);
-            if (toolUpdate) {
-              const prev = tools.get(toolUpdate.id) ?? { id: toolUpdate.id };
-              tools.set(toolUpdate.id, {
-                ...prev,
-                ...toolUpdate,
-              });
-              if (
-                !segments.some((segment) => segment.type === "tool" && segment.id === toolUpdate.id)
-              ) {
-                segments.push({
-                  type: "tool",
-                  id: toolUpdate.id,
-                });
-              }
-            } else {
-              const last = segments[segments.length - 1];
-              if (last?.type === "text") {
-                last.content += event.chunk;
-              } else {
-                segments.push({
-                  type: "text",
-                  content: event.chunk,
-                });
-              }
-            }
-            enqueuePatch(false);
-            return;
-          }
-
-          if (event.type === "task.tool_update") {
-            const toolUpdate = this.toToolView(event.update);
-            if (toolUpdate) {
-              const prev = tools.get(toolUpdate.id) ?? { id: toolUpdate.id };
-              tools.set(toolUpdate.id, {
-                ...prev,
-                ...toolUpdate,
-              });
-              if (
-                !segments.some((segment) => segment.type === "tool" && segment.id === toolUpdate.id)
-              ) {
-                segments.push({
-                  type: "tool",
-                  id: toolUpdate.id,
-                });
-              }
-              enqueuePatch(false);
-            }
-            return;
-          }
-
-          if (event.type === "task.approval_requested") {
-            void this.sendApprovalCard(data.message.chat_id, event.request).catch((error) => {
-              this.logger.error("send approval card failed", {
-                taskId: event.taskId,
-                requestId: event.request.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-            return;
-          }
-
-          if (event.type === "task.approval_resolved") {
-            if (shouldPatchApprovalSummary(event.decision)) {
-              void this.patchApprovalCardByDecision(event.decision);
-            }
-            return;
-          }
-
-          if (event.type === "task.failed") {
-            status = "failed";
-            summary = event.error;
-            enqueuePatch(true);
-            return;
-          }
-
-          if (event.type === "task.completed") {
-            status = "completed";
-            summary = event.summary ?? "执行完成";
-            enqueuePatch(true);
-          }
+          this.onTaskEvent(params.chatId, event, streamer);
         },
       },
     );
-    if (result.sessionId && this.#chatSessionIds.get(data.message.chat_id) !== result.sessionId) {
-      this.#chatSessionIds.set(data.message.chat_id, result.sessionId);
-      await this.persistChatState();
+
+    if (
+      result.sessionId &&
+      this.#sessionController.getResumeSessionId(params.chatId) !== result.sessionId
+    ) {
+      await this.#sessionController.setSessionId(params.chatId, result.sessionId);
     }
 
     const failed = result.events.find(
-      (event): event is Extract<BridgeEvent, { type: "task.failed" }> => {
-        return event.type === "task.failed";
-      },
+      (event): event is Extract<BridgeEvent, { type: "task.failed" }> =>
+        event.type === "task.failed",
     );
     const completed = result.events.find(
-      (event): event is Extract<BridgeEvent, { type: "task.completed" }> => {
-        return event.type === "task.completed";
-      },
+      (event): event is Extract<BridgeEvent, { type: "task.completed" }> =>
+        event.type === "task.completed",
     );
 
     if (failed) {
-      status = "failed";
-      summary = failed.error;
+      streamer.markFailed(failed.error);
     } else if (completed) {
-      status = "completed";
-      summary = completed.summary ?? "执行完成";
+      streamer.markCompleted(completed.summary);
     }
 
-    enqueuePatch(true);
-    await patchQueue;
-    if (!cardMessageId) {
-      await ensureCardMessage();
-    }
+    await streamer.finalize();
+
     if (typingReactionId) {
-      await this.removeTypingReaction(data.message.message_id, typingReactionId).catch(() => {
+      await this.removeTypingReaction(params.messageId, typingReactionId).catch(() => {
         return;
       });
       typingReactionId = undefined;
     }
   }
 
-  private parseCardActionValue(data: Record<string, unknown>): {
-    requestId: string;
-    taskId: string;
-    decision: "approved" | "rejected";
-    comment?: string;
-  } | null {
-    const payload =
-      (data.action as { value?: unknown } | undefined)?.value ??
-      (data.event as { action?: { value?: unknown } } | undefined)?.action?.value;
-    if (!payload) {
-      return null;
+  private onTaskEvent(chatId: string, event: BridgeEvent, streamer: TaskCardStreamer): void {
+    if (event.type === "task.output") {
+      streamer.handleOutputChunk(event.chunk);
+      return;
     }
-    let value: unknown = payload;
-    if (typeof value === "string") {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        return null;
+
+    if (event.type === "task.tool_update") {
+      streamer.handleToolUpdate(event.update);
+      return;
+    }
+
+    if (event.type === "task.approval_requested") {
+      void this.sendApprovalCard(chatId, event.request).catch((error) => {
+        this.logger.error("send approval card failed", {
+          taskId: event.taskId,
+          requestId: event.request.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
+
+    if (event.type === "task.approval_resolved") {
+      if (shouldPatchApprovalSummary(event.decision)) {
+        void this.patchApprovalCardByDecision(event.decision);
       }
+      return;
     }
-    if (!value || typeof value !== "object") {
-      return null;
+
+    if (event.type === "task.failed") {
+      streamer.markFailed(event.error);
+      return;
     }
-    const item = value as Record<string, unknown>;
-    if (
-      typeof item.requestId === "string" &&
-      typeof item.taskId === "string" &&
-      (item.decision === "approved" || item.decision === "rejected")
-    ) {
-      return {
-        requestId: item.requestId,
-        taskId: item.taskId,
-        decision: item.decision,
-        comment: typeof item.comment === "string" ? item.comment : undefined,
-      };
+
+    if (event.type === "task.completed") {
+      streamer.markCompleted(event.summary);
     }
-    return null;
+  }
+
+  private async processInterruptCommand(chatId: string): Promise<void> {
+    const interrupted = await this.#sessionController.interrupt(chatId, this.taskRunner);
+    if (!interrupted) {
+      await this.sendText(chatId, "当前没有执行中的任务。");
+      return;
+    }
+    await this.sendText(chatId, "已打断当前任务。");
   }
 
   private async handleCardAction(data: Record<string, unknown>): Promise<void> {
-    const action = this.parseCardActionValue(data);
+    const action = parseCardActionValue(data);
     if (!action) {
       this.logger.warn("card action ignored: invalid payload");
       return;
     }
+
     const decidedBy =
       (data.operator as { operator_id?: { open_id?: string; user_id?: string } } | undefined)
         ?.operator_id?.open_id ??
       (data.operator as { operator_id?: { open_id?: string; user_id?: string } } | undefined)
         ?.operator_id?.user_id ??
       "feishu-user";
+
     const decision: ApprovalDecision = {
       requestId: action.requestId,
       taskId: action.taskId,
@@ -543,12 +341,16 @@ export class FeishuGateway {
       decidedAt: new Date().toISOString(),
       decidedBy,
     };
+
     this.approvalGateway.resolve(decision);
     void this.patchApprovalCardByDecision(decision);
   }
 
   private async sendApprovalCard(chatId: string, request: ApprovalRequest): Promise<void> {
-    const messageId = await this.sendCard(chatId, this.buildApprovalCard(request, "pending"));
+    const messageId = await this.sendCard(
+      chatId,
+      this.#cardRenderer.buildApprovalCard(request, "pending"),
+    );
     this.#approvalCards.set(request.id, {
       chatId,
       messageId,
@@ -563,7 +365,7 @@ export class FeishuGateway {
     }
     await this.patchCard(
       binding.messageId,
-      this.buildApprovalCard(snapshot.request, snapshot.status, snapshot.decision),
+      this.#cardRenderer.buildApprovalCard(snapshot.request, snapshot.status, snapshot.decision),
     ).catch((error) => {
       this.logger.warn("patch approval card failed", {
         requestId: snapshot.request.id,
@@ -579,288 +381,16 @@ export class FeishuGateway {
       return;
     }
     const title = decision.decision === "approved" ? "已批准" : "已拒绝";
-    await this.patchCard(binding.messageId, this.buildApprovalSummaryCard(title, decision)).catch(
-      (error) => {
-        this.logger.warn("patch approval card failed", {
-          requestId: decision.requestId,
-          messageId: binding.messageId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-    );
-  }
-
-  private buildApprovalSummaryCard(
-    title: string,
-    decision: ApprovalDecision,
-  ): Record<string, unknown> {
-    return {
-      schema: "2.0",
-      config: {
-        update_multi: true,
-      },
-      body: {
-        direction: "vertical",
-        padding: "10px 12px 10px 12px",
-        elements: [
-          {
-            tag: "markdown",
-            content: `**${this.escapeCardMarkdown(title)}**`,
-          },
-          {
-            tag: "markdown",
-            content: `request: ${this.escapeCardMarkdown(decision.requestId)}`,
-          },
-          {
-            tag: "markdown",
-            content: `时间: ${this.escapeCardMarkdown(decision.decidedAt)}`,
-          },
-          {
-            tag: "markdown",
-            content: `操作者: ${this.escapeCardMarkdown(decision.decidedBy)}`,
-          },
-        ],
-      },
-    };
-  }
-
-  private buildApprovalCard(
-    request: ApprovalRequest,
-    status: "pending" | "approved" | "rejected" | "expired",
-    decision?: ApprovalDecision,
-  ): Record<string, unknown> {
-    const statusText =
-      status === "pending"
-        ? "待审批"
-        : status === "approved"
-          ? "已批准"
-          : status === "rejected"
-            ? "已拒绝"
-            : "已超时";
-    const elements: Array<Record<string, unknown>> = [
-      {
-        tag: "markdown",
-        content: `**状态：${this.escapeCardMarkdown(statusText)}**`,
-      },
-      {
-        tag: "markdown",
-        content: `类型: ${this.escapeCardMarkdown(request.kind)} | 风险: ${this.escapeCardMarkdown(request.riskLevel)}`,
-      },
-      {
-        tag: "markdown",
-        content: `标题: ${this.escapeCardMarkdown(request.title)}`,
-      },
-      {
-        tag: "markdown",
-        content: `工作目录: ${this.escapeCardMarkdown(request.cwd)}`,
-      },
-    ];
-    if (request.command) {
-      elements.push({
-        tag: "markdown",
-        content: `命令: \`${this.escapeCardMarkdown(this.shorten(request.command, 140))}\``,
+    await this.patchCard(
+      binding.messageId,
+      this.#cardRenderer.buildApprovalSummaryCard(title, decision),
+    ).catch((error) => {
+      this.logger.warn("patch approval card failed", {
+        requestId: decision.requestId,
+        messageId: binding.messageId,
+        error: error instanceof Error ? error.message : String(error),
       });
-    }
-    if (request.target) {
-      elements.push({
-        tag: "markdown",
-        content: `目标: ${this.escapeCardMarkdown(request.target)}`,
-      });
-    }
-    if (status === "pending") {
-      elements.push({
-        tag: "column_set",
-        columns: [
-          this.buildApprovalButton("批准", "primary", {
-            requestId: request.id,
-            taskId: request.taskId,
-            decision: "approved",
-          }),
-          this.buildApprovalButton("本会话允许", "default", {
-            requestId: request.id,
-            taskId: request.taskId,
-            decision: "approved",
-            comment: "approved-for-session",
-          }),
-          this.buildApprovalButton("拒绝", "danger", {
-            requestId: request.id,
-            taskId: request.taskId,
-            decision: "rejected",
-          }),
-        ],
-      });
-    } else if (decision) {
-      elements.push({
-        tag: "markdown",
-        content: `操作人: ${this.escapeCardMarkdown(decision.decidedBy)}\\n时间: ${this.escapeCardMarkdown(decision.decidedAt)}`,
-      });
-    }
-
-    return {
-      schema: "2.0",
-      config: {
-        update_multi: true,
-        width_mode: "fill",
-      },
-      body: {
-        direction: "vertical",
-        padding: "10px 12px 10px 12px",
-        elements,
-      },
-    };
-  }
-
-  private buildApprovalButton(
-    label: string,
-    type: "primary" | "default" | "danger",
-    value: Record<string, string>,
-  ): Record<string, unknown> {
-    return {
-      tag: "column",
-      width: "weighted",
-      weight: 1,
-      elements: [
-        {
-          tag: "button",
-          type,
-          text: {
-            tag: "plain_text",
-            content: label,
-          },
-          behaviors: [
-            {
-              type: "callback",
-              value,
-            },
-          ],
-        },
-      ],
-    };
-  }
-
-  private resolveWorkspace(chatId: string): WorkspaceConfig | undefined {
-    const baseWorkspace = this.workspaces[0];
-    if (!baseWorkspace) {
-      return undefined;
-    }
-    const cwd = this.#chatCwds.get(chatId) ?? baseWorkspace.cwd;
-    return {
-      ...baseWorkspace,
-      cwd,
-    };
-  }
-
-  private async resolveValidatedWorkspace(chatId: string): Promise<WorkspaceConfig | undefined> {
-    const workspace = this.resolveWorkspace(chatId);
-    if (!workspace) {
-      return undefined;
-    }
-    if (await this.isDirectory(workspace.cwd)) {
-      return workspace;
-    }
-
-    const fallback = this.workspaces[0];
-    if (!fallback) {
-      return workspace;
-    }
-    await this.setChatCwd(chatId, fallback.cwd);
-    this.#chatSessionIds.delete(chatId);
-    await this.persistChatState();
-    return {
-      ...fallback,
-      cwd: fallback.cwd,
-    };
-  }
-
-  private async setChatCwd(chatId: string, cwd: string): Promise<void> {
-    this.#chatCwds.set(chatId, cwd);
-    await this.persistChatState();
-  }
-
-  private async isDirectory(path: string): Promise<boolean> {
-    const dirStat = await stat(path).catch(() => undefined);
-    return Boolean(dirStat?.isDirectory());
-  }
-
-  private async persistChatState(): Promise<void> {
-    await this.#chatStateStore.saveState({
-      chatCwds: this.#chatCwds,
-      chatSessionIds: this.#chatSessionIds,
     });
-  }
-
-  private async processInterruptCommand(chatId: string): Promise<void> {
-    if (!this.taskRunner.isConversationRunning(chatId)) {
-      await this.sendText(chatId, "当前没有执行中的任务。");
-      return;
-    }
-    await this.taskRunner.resetConversation(chatId);
-    await this.sendText(chatId, "已打断当前任务。");
-  }
-
-  private async parseUserCommand(
-    rawPrompt: string,
-    currentCwd: string,
-  ): Promise<
-    | {
-        type: "prompt";
-        prompt: string;
-      }
-    | {
-        type: "new";
-        cwd?: string;
-      }
-  > {
-    if (rawPrompt === "/new") {
-      return {
-        type: "new",
-      };
-    }
-
-    if (rawPrompt.startsWith("/new ")) {
-      const inputPath = rawPrompt.slice(5).trim();
-      if (!inputPath) {
-        return {
-          type: "new",
-        };
-      }
-      const cwd = await this.resolveValidatedCwd(inputPath, currentCwd);
-      return {
-        type: "new",
-        cwd,
-      };
-    }
-
-    return {
-      type: "prompt",
-      prompt: rawPrompt,
-    };
-  }
-
-  private async resolveValidatedCwd(inputPath: string, baseCwd: string): Promise<string> {
-    const candidate = isAbsolute(inputPath) ? inputPath : resolve(baseCwd, inputPath);
-    const dirStat = await stat(candidate).catch(() => undefined);
-    if (!dirStat || !dirStat.isDirectory()) {
-      throw new Error(`路径不存在或不是目录：${candidate}`);
-    }
-    return resolve(candidate);
-  }
-
-  private gcHandledMessageIds(): void {
-    const now = Date.now();
-    for (const [messageId, timestamp] of this.#handledMessageIds.entries()) {
-      if (now - timestamp > this.#dedupeTtlMs) {
-        this.#handledMessageIds.delete(messageId);
-      }
-    }
-  }
-
-  private parseContent(content: string): FeishuMessageContent {
-    try {
-      return JSON.parse(content) as FeishuMessageContent;
-    } catch {
-      return {};
-    }
   }
 
   private async sendText(chatId: string, text: string): Promise<void> {
@@ -935,344 +465,5 @@ export class FeishuGateway {
         content: JSON.stringify(card),
       },
     });
-  }
-
-  private buildCard(params: {
-    status: "running" | "completed" | "failed";
-    segments: ContentSegment[];
-    tools: Map<string, ToolView>;
-    summary: string;
-  }): Record<string, unknown> {
-    const footerElement =
-      params.status === "running"
-        ? {
-            tag: "markdown",
-            content: " ",
-            icon: {
-              tag: "custom_icon",
-              img_key: "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg",
-              size: "16px 16px",
-            },
-            element_id: "loading_icon",
-          }
-        : params.status === "completed"
-          ? {
-              tag: "div",
-              text: {
-                tag: "plain_text",
-                content: "已完成",
-                text_size: "cus-0",
-              },
-            }
-          : {
-              tag: "div",
-              text: {
-                tag: "plain_text",
-                content: `执行失败：${params.summary}`,
-                text_size: "cus-0",
-              },
-            };
-
-    const elements = this.buildContentElements(params.segments, params.tools);
-
-    if (elements.length === 0) {
-      elements.push({
-        tag: "markdown",
-        content: " ",
-      });
-    }
-
-    elements.push(footerElement);
-
-    return {
-      schema: "2.0",
-      config: {
-        update_multi: true,
-        width_mode: "fill",
-        streaming_mode: true,
-        style: {
-          text_size: {
-            "cus-0": {
-              default: "notation",
-              pc: "notation",
-              mobile: "notation",
-            },
-            "cus-1": {
-              default: "small",
-              pc: "small",
-              mobile: "small",
-            },
-          },
-          color: {
-            foot_gray: {
-              light_mode: "rgba(100,106,115,1)",
-              dark_mode: "rgba(182,188,196,1)",
-            },
-            tool_meta_gray: {
-              light_mode: "rgba(100,106,115,1)",
-              dark_mode: "rgba(182,188,196,1)",
-            },
-          },
-        },
-        summary: {
-          content:
-            params.status === "running"
-              ? "生成中"
-              : params.status === "completed"
-                ? "已完成"
-                : `执行失败：${params.summary}`,
-        },
-      },
-      body: {
-        direction: "vertical",
-        vertical_spacing: "6px",
-        padding: "10px 12px 10px 12px",
-        elements,
-      },
-    };
-  }
-
-  private buildContentElements(
-    segments: ContentSegment[],
-    tools: Map<string, ToolView>,
-  ): Array<Record<string, unknown>> {
-    const elements: Array<Record<string, unknown>> = [];
-    const maxToolCards = 12;
-    let renderedToolCards = 0;
-    let hiddenToolCards = 0;
-    let lastToolPath: string | undefined;
-    let lastToolSignature: string | undefined;
-    let index = 0;
-    while (index < segments.length) {
-      const segment = segments[index];
-      if (!segment) {
-        break;
-      }
-      if (segment.type === "text") {
-        if (!segment.content) {
-          index += 1;
-          continue;
-        }
-        elements.push({
-          tag: "markdown",
-          content: this.escapeCardMarkdown(segment.content),
-        });
-        index += 1;
-        continue;
-      }
-
-      const toolCards: Array<Record<string, unknown>> = [];
-      while (index < segments.length && segments[index]?.type === "tool") {
-        const current = segments[index] as Extract<ContentSegment, { type: "tool" }>;
-        const tool = tools.get(current.id);
-        if (!tool) {
-          index += 1;
-          continue;
-        }
-        const statusText = this.formatToolStatus(tool.status);
-        const statusBadge = this.getToolStatusBadge(tool.status);
-        const cmdText = tool.cmd ? this.shorten(tool.cmd, 140) : "（无命令）";
-        const pathText = tool.path ? this.shorten(tool.path, 90) : undefined;
-        const errorText = tool.error ? this.shorten(tool.error, 160) : undefined;
-        const title = tool.name ?? this.getToolDisplayTitle(tool.cmd);
-        const signature = `${statusText}|${cmdText}|${pathText ?? ""}|${errorText ?? ""}`;
-        if (signature === lastToolSignature) {
-          index += 1;
-          continue;
-        }
-        lastToolSignature = signature;
-
-        if (renderedToolCards >= maxToolCards) {
-          hiddenToolCards += 1;
-          index += 1;
-          continue;
-        }
-
-        const cardElements: Array<Record<string, unknown>> = [
-          {
-            tag: "div",
-            text: {
-              tag: "plain_text",
-              content: `${statusBadge} ${title}`,
-            },
-          },
-          {
-            tag: "div",
-            text: {
-              tag: "plain_text",
-              content: cmdText,
-            },
-          },
-          {
-            tag: "markdown",
-            content: `<font color='grey'>状态：${this.escapeCardMarkdown(statusText)}</font>`,
-          },
-        ];
-        if (pathText && pathText !== lastToolPath) {
-          cardElements.push({
-            tag: "markdown",
-            content: `<font color='grey'>↳ ${this.escapeCardMarkdown(pathText)}</font>`,
-          });
-          lastToolPath = pathText;
-        }
-        if (errorText) {
-          cardElements.push({
-            tag: "div",
-            text: {
-              tag: "plain_text",
-              content: `❗ ${errorText}`,
-              text_size: "cus-1",
-            },
-          });
-        }
-
-        toolCards.push({
-          tag: "interactive_container",
-          has_border: true,
-          corner_radius: "10px",
-          padding: "8px 10px 8px 10px",
-          margin: "4px 0 4px 0",
-          elements: cardElements,
-        });
-        renderedToolCards += 1;
-        index += 1;
-      }
-
-      if (toolCards.length > 0) {
-        elements.push({
-          tag: "collapsible_panel",
-          header: {
-            title: {
-              tag: "plain_text",
-              content: `🛠️ 工具调用（${toolCards.length}）`,
-            },
-          },
-          elements: toolCards,
-        });
-      }
-    }
-    if (hiddenToolCards > 0) {
-      elements.push({
-        tag: "markdown",
-        content: `…已折叠 ${hiddenToolCards} 条工具调用`,
-      });
-    }
-    return elements;
-  }
-
-  private parseToolChunk(chunk: string): ToolView | undefined {
-    const lines = chunk
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length === 0 || !lines[0]?.startsWith("[tool]")) {
-      return undefined;
-    }
-
-    const headMatch = lines[0].match(/^\[tool\]\s+(.+?)(?:\s+\(([^)]+)\))?$/);
-    if (!headMatch?.[1]) {
-      return undefined;
-    }
-
-    const id = headMatch[1].trim();
-    const status = headMatch[2]?.trim();
-    const tool: ToolView = { id, status };
-
-    for (const line of lines.slice(1)) {
-      if (line.startsWith("cmd:")) {
-        tool.cmd = line.slice(4).trim();
-        continue;
-      }
-      if (line.startsWith("path:")) {
-        tool.path = line.slice(5).trim();
-        continue;
-      }
-      if (line.startsWith("error:")) {
-        tool.error = line.slice(6).trim();
-      }
-    }
-
-    return tool;
-  }
-
-  private toToolView(update: {
-    toolCallId?: string;
-    toolName?: string;
-    status?: string;
-    title?: string;
-    query?: string;
-    url?: string;
-    command?: string;
-    path?: string;
-    error?: string;
-  }): ToolView | undefined {
-    if (!update.toolCallId) {
-      return undefined;
-    }
-    const cmd = update.command ?? update.query ?? update.url ?? update.title ?? update.toolName;
-    return {
-      id: update.toolCallId,
-      name: update.toolName,
-      status: update.status,
-      cmd,
-      query: update.query,
-      url: update.url,
-      path: update.path,
-      error: update.error,
-    };
-  }
-
-  private formatToolStatus(status?: string): string {
-    if (!status) {
-      return "处理中";
-    }
-    if (status === "in_progress") {
-      return "进行中";
-    }
-    if (status === "completed") {
-      return "已完成";
-    }
-    if (status === "failed") {
-      return "失败";
-    }
-    return status;
-  }
-
-  private getToolStatusBadge(_status?: string): string {
-    return "🛠️";
-  }
-
-  private getToolDisplayTitle(cmd?: string): string {
-    if (!cmd) {
-      return "步骤";
-    }
-    const head = cmd.trim().split(/\s+/, 1)[0]?.toLowerCase();
-    if (!head) {
-      return "步骤";
-    }
-    if (head === "cat" || head === "sed" || head === "head" || head === "tail") {
-      return "读取";
-    }
-    if (head === "ls" || head === "find" || head === "rg" || head === "grep") {
-      return "检索";
-    }
-    if (head === "git") {
-      return "Git";
-    }
-    if (head === "npm" || head === "pnpm" || head === "vp") {
-      return "命令";
-    }
-    return "步骤";
-  }
-
-  private shorten(text: string, maxLen: number): string {
-    if (text.length <= maxLen) {
-      return text;
-    }
-    return `${text.slice(0, maxLen)}...`;
-  }
-
-  private escapeCardMarkdown(text: string): string {
-    return text.replace(/\r/g, "").replace(/\\/g, "\\\\").replace(/`/g, "\\`");
   }
 }
