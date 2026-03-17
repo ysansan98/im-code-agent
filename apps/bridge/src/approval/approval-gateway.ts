@@ -1,9 +1,18 @@
 import type { ApprovalDecision, ApprovalRequest } from "@im-code-agent/shared";
 
 import type { Logger } from "../utils/logger.ts";
-import { ApprovalStore } from "./approval-store.ts";
+import {
+  ApprovalStore,
+  type ApprovalSnapshot,
+  type AwaitDecisionResult,
+} from "./approval-store.ts";
+
+type ResolutionListener = (snapshot: ApprovalSnapshot) => void;
 
 export class ApprovalGateway {
+  readonly #resolutionListeners = new Set<ResolutionListener>();
+  readonly #sessionAllowAll = new Set<string>();
+
   constructor(
     private readonly store: ApprovalStore,
     private readonly logger: Logger,
@@ -18,9 +27,22 @@ export class ApprovalGateway {
     });
   }
 
-  resolve(decision: ApprovalDecision): ApprovalRequest | undefined {
-    const request = this.store.get(decision.requestId);
-    if (!request) {
+  async requestAndWait(request: ApprovalRequest, timeoutMs: number): Promise<AwaitDecisionResult> {
+    this.request(request);
+    const result = await this.store.awaitDecision(request.id, timeoutMs);
+    if (result.status === "expired") {
+      const snapshot = this.store.get(request.id);
+      if (snapshot) {
+        this.emitResolution(snapshot);
+        this.store.delete(request.id);
+      }
+    }
+    return result;
+  }
+
+  resolve(decision: ApprovalDecision): ApprovalSnapshot | undefined {
+    const result = this.store.resolve(decision);
+    if (!result.snapshot) {
       this.logger.warn("approval request not found", {
         requestId: decision.requestId,
         taskId: decision.taskId,
@@ -28,12 +50,44 @@ export class ApprovalGateway {
       return undefined;
     }
 
-    this.store.delete(decision.requestId);
+    if (!result.accepted) {
+      this.logger.info("approval request resolve ignored", {
+        requestId: decision.requestId,
+        taskId: decision.taskId,
+        decision: decision.decision,
+        status: result.snapshot.status,
+      });
+      return result.snapshot;
+    }
+
+    if (decision.decision === "approved" && decision.comment === "approved-for-session") {
+      this.#sessionAllowAll.add(decision.taskId);
+    }
+
     this.logger.info("approval request resolved", {
       requestId: decision.requestId,
       taskId: decision.taskId,
       decision: decision.decision,
     });
-    return request;
+    this.emitResolution(result.snapshot);
+    this.store.delete(decision.requestId);
+    return result.snapshot;
+  }
+
+  isSessionAllowAll(taskId: string): boolean {
+    return this.#sessionAllowAll.has(taskId);
+  }
+
+  onResolved(listener: ResolutionListener): () => void {
+    this.#resolutionListeners.add(listener);
+    return () => {
+      this.#resolutionListeners.delete(listener);
+    };
+  }
+
+  private emitResolution(snapshot: ApprovalSnapshot): void {
+    for (const listener of this.#resolutionListeners) {
+      listener(snapshot);
+    }
   }
 }
