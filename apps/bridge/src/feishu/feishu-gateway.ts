@@ -2,8 +2,17 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 import lark from "@larksuiteoapi/node-sdk";
-import type { BridgeEvent, FeishuConfig, WorkspaceConfig } from "@im-code-agent/shared";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  BridgeEvent,
+  FeishuConfig,
+  WorkspaceConfig,
+} from "@im-code-agent/shared";
 
+import type { ApprovalSnapshot } from "../approval/approval-store.ts";
+import { ApprovalGateway } from "../approval/approval-gateway.ts";
+import { shouldPatchApprovalSummary } from "./approval-card-policy.ts";
 import { ChatStateStore } from "./chat-state-store.ts";
 import { TaskRunner } from "../session/task-runner.ts";
 import type { Logger } from "../utils/logger.ts";
@@ -14,8 +23,11 @@ type FeishuMessageContent = {
 
 type ToolView = {
   id: string;
+  name?: string;
   status?: string;
   cmd?: string;
+  query?: string;
+  url?: string;
   path?: string;
   error?: string;
 };
@@ -29,6 +41,12 @@ type ContentSegment =
       type: "tool";
       id: string;
     };
+
+type ApprovalCardBinding = {
+  chatId: string;
+  messageId: string;
+  taskId: string;
+};
 
 function isInterruptCommand(text: string): boolean {
   return text === "/stop" || text === "/interrupt";
@@ -45,12 +63,14 @@ export class FeishuGateway {
   readonly #chatQueues = new Map<string, Promise<void>>();
   readonly #chatCwds = new Map<string, string>();
   readonly #chatSessionIds = new Map<string, string>();
+  readonly #approvalCards = new Map<string, ApprovalCardBinding>();
   readonly #chatStateStore = new ChatStateStore();
 
   constructor(
     private readonly config: FeishuConfig,
     private readonly workspaces: WorkspaceConfig[],
     private readonly taskRunner: TaskRunner,
+    private readonly approvalGateway: ApprovalGateway,
     private readonly logger: Logger,
   ) {
     this.#client = new lark.Client({
@@ -67,10 +87,27 @@ export class FeishuGateway {
     this.#eventDispatcher = new lark.EventDispatcher({
       encryptKey: config.encryptKey,
       verificationToken: config.verificationToken,
-    }).register({
-      "im.message.receive_v1": async (data) => {
-        await this.handleIncomingMessage(data);
+    })
+      .register({
+        "im.message.receive_v1": async (data) => {
+          await this.handleIncomingMessage(data);
+        },
+      })
+      .register({});
+
+    (
+      this.#eventDispatcher as unknown as {
+        register: (handles: Record<string, (data: unknown) => Promise<unknown>>) => void;
+      }
+    ).register({
+      "card.action.trigger": async (data: unknown) => {
+        await this.handleCardAction((data ?? {}) as Record<string, unknown>);
+        return {};
       },
+    });
+
+    this.approvalGateway.onResolved((snapshot) => {
+      void this.patchApprovalCard(snapshot);
     });
   }
 
@@ -356,6 +393,45 @@ export class FeishuGateway {
             return;
           }
 
+          if (event.type === "task.tool_update") {
+            const toolUpdate = this.toToolView(event.update);
+            if (toolUpdate) {
+              const prev = tools.get(toolUpdate.id) ?? { id: toolUpdate.id };
+              tools.set(toolUpdate.id, {
+                ...prev,
+                ...toolUpdate,
+              });
+              if (
+                !segments.some((segment) => segment.type === "tool" && segment.id === toolUpdate.id)
+              ) {
+                segments.push({
+                  type: "tool",
+                  id: toolUpdate.id,
+                });
+              }
+              enqueuePatch(false);
+            }
+            return;
+          }
+
+          if (event.type === "task.approval_requested") {
+            void this.sendApprovalCard(data.message.chat_id, event.request).catch((error) => {
+              this.logger.error("send approval card failed", {
+                taskId: event.taskId,
+                requestId: event.request.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+            return;
+          }
+
+          if (event.type === "task.approval_resolved") {
+            if (shouldPatchApprovalSummary(event.decision)) {
+              void this.patchApprovalCardByDecision(event.decision);
+            }
+            return;
+          }
+
           if (event.type === "task.failed") {
             status = "failed";
             summary = event.error;
@@ -406,6 +482,260 @@ export class FeishuGateway {
       });
       typingReactionId = undefined;
     }
+  }
+
+  private parseCardActionValue(data: Record<string, unknown>): {
+    requestId: string;
+    taskId: string;
+    decision: "approved" | "rejected";
+    comment?: string;
+  } | null {
+    const payload =
+      (data.action as { value?: unknown } | undefined)?.value ??
+      (data.event as { action?: { value?: unknown } } | undefined)?.action?.value;
+    if (!payload) {
+      return null;
+    }
+    let value: unknown = payload;
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const item = value as Record<string, unknown>;
+    if (
+      typeof item.requestId === "string" &&
+      typeof item.taskId === "string" &&
+      (item.decision === "approved" || item.decision === "rejected")
+    ) {
+      return {
+        requestId: item.requestId,
+        taskId: item.taskId,
+        decision: item.decision,
+        comment: typeof item.comment === "string" ? item.comment : undefined,
+      };
+    }
+    return null;
+  }
+
+  private async handleCardAction(data: Record<string, unknown>): Promise<void> {
+    const action = this.parseCardActionValue(data);
+    if (!action) {
+      this.logger.warn("card action ignored: invalid payload");
+      return;
+    }
+    const decidedBy =
+      (data.operator as { operator_id?: { open_id?: string; user_id?: string } } | undefined)
+        ?.operator_id?.open_id ??
+      (data.operator as { operator_id?: { open_id?: string; user_id?: string } } | undefined)
+        ?.operator_id?.user_id ??
+      "feishu-user";
+    const decision: ApprovalDecision = {
+      requestId: action.requestId,
+      taskId: action.taskId,
+      decision: action.decision,
+      comment: action.comment,
+      decidedAt: new Date().toISOString(),
+      decidedBy,
+    };
+    this.approvalGateway.resolve(decision);
+    void this.patchApprovalCardByDecision(decision);
+  }
+
+  private async sendApprovalCard(chatId: string, request: ApprovalRequest): Promise<void> {
+    const messageId = await this.sendCard(chatId, this.buildApprovalCard(request, "pending"));
+    this.#approvalCards.set(request.id, {
+      chatId,
+      messageId,
+      taskId: request.taskId,
+    });
+  }
+
+  private async patchApprovalCard(snapshot: ApprovalSnapshot): Promise<void> {
+    const binding = this.#approvalCards.get(snapshot.request.id);
+    if (!binding) {
+      return;
+    }
+    await this.patchCard(
+      binding.messageId,
+      this.buildApprovalCard(snapshot.request, snapshot.status, snapshot.decision),
+    ).catch((error) => {
+      this.logger.warn("patch approval card failed", {
+        requestId: snapshot.request.id,
+        messageId: binding.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async patchApprovalCardByDecision(decision: ApprovalDecision): Promise<void> {
+    const binding = this.#approvalCards.get(decision.requestId);
+    if (!binding) {
+      return;
+    }
+    const title = decision.decision === "approved" ? "已批准" : "已拒绝";
+    await this.patchCard(binding.messageId, this.buildApprovalSummaryCard(title, decision)).catch(
+      (error) => {
+        this.logger.warn("patch approval card failed", {
+          requestId: decision.requestId,
+          messageId: binding.messageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+  }
+
+  private buildApprovalSummaryCard(
+    title: string,
+    decision: ApprovalDecision,
+  ): Record<string, unknown> {
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+      },
+      body: {
+        direction: "vertical",
+        padding: "10px 12px 10px 12px",
+        elements: [
+          {
+            tag: "markdown",
+            content: `**${this.escapeCardMarkdown(title)}**`,
+          },
+          {
+            tag: "markdown",
+            content: `request: ${this.escapeCardMarkdown(decision.requestId)}`,
+          },
+          {
+            tag: "markdown",
+            content: `时间: ${this.escapeCardMarkdown(decision.decidedAt)}`,
+          },
+          {
+            tag: "markdown",
+            content: `操作者: ${this.escapeCardMarkdown(decision.decidedBy)}`,
+          },
+        ],
+      },
+    };
+  }
+
+  private buildApprovalCard(
+    request: ApprovalRequest,
+    status: "pending" | "approved" | "rejected" | "expired",
+    decision?: ApprovalDecision,
+  ): Record<string, unknown> {
+    const statusText =
+      status === "pending"
+        ? "待审批"
+        : status === "approved"
+          ? "已批准"
+          : status === "rejected"
+            ? "已拒绝"
+            : "已超时";
+    const elements: Array<Record<string, unknown>> = [
+      {
+        tag: "markdown",
+        content: `**状态：${this.escapeCardMarkdown(statusText)}**`,
+      },
+      {
+        tag: "markdown",
+        content: `类型: ${this.escapeCardMarkdown(request.kind)} | 风险: ${this.escapeCardMarkdown(request.riskLevel)}`,
+      },
+      {
+        tag: "markdown",
+        content: `标题: ${this.escapeCardMarkdown(request.title)}`,
+      },
+      {
+        tag: "markdown",
+        content: `工作目录: ${this.escapeCardMarkdown(request.cwd)}`,
+      },
+    ];
+    if (request.command) {
+      elements.push({
+        tag: "markdown",
+        content: `命令: \`${this.escapeCardMarkdown(this.shorten(request.command, 140))}\``,
+      });
+    }
+    if (request.target) {
+      elements.push({
+        tag: "markdown",
+        content: `目标: ${this.escapeCardMarkdown(request.target)}`,
+      });
+    }
+    if (status === "pending") {
+      elements.push({
+        tag: "column_set",
+        columns: [
+          this.buildApprovalButton("批准", "primary", {
+            requestId: request.id,
+            taskId: request.taskId,
+            decision: "approved",
+          }),
+          this.buildApprovalButton("本会话允许", "default", {
+            requestId: request.id,
+            taskId: request.taskId,
+            decision: "approved",
+            comment: "approved-for-session",
+          }),
+          this.buildApprovalButton("拒绝", "danger", {
+            requestId: request.id,
+            taskId: request.taskId,
+            decision: "rejected",
+          }),
+        ],
+      });
+    } else if (decision) {
+      elements.push({
+        tag: "markdown",
+        content: `操作人: ${this.escapeCardMarkdown(decision.decidedBy)}\\n时间: ${this.escapeCardMarkdown(decision.decidedAt)}`,
+      });
+    }
+
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+      },
+      body: {
+        direction: "vertical",
+        padding: "10px 12px 10px 12px",
+        elements,
+      },
+    };
+  }
+
+  private buildApprovalButton(
+    label: string,
+    type: "primary" | "default" | "danger",
+    value: Record<string, string>,
+  ): Record<string, unknown> {
+    return {
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [
+        {
+          tag: "button",
+          type,
+          text: {
+            tag: "plain_text",
+            content: label,
+          },
+          behaviors: [
+            {
+              type: "callback",
+              value,
+            },
+          ],
+        },
+      ],
+    };
   }
 
   private resolveWorkspace(chatId: string): WorkspaceConfig | undefined {
@@ -744,7 +1074,7 @@ export class FeishuGateway {
         const cmdText = tool.cmd ? this.shorten(tool.cmd, 140) : "（无命令）";
         const pathText = tool.path ? this.shorten(tool.path, 90) : undefined;
         const errorText = tool.error ? this.shorten(tool.error, 160) : undefined;
-        const title = this.getToolDisplayTitle(tool.cmd);
+        const title = tool.name ?? this.getToolDisplayTitle(tool.cmd);
         const signature = `${statusText}|${cmdText}|${pathText ?? ""}|${errorText ?? ""}`;
         if (signature === lastToolSignature) {
           index += 1;
@@ -863,6 +1193,33 @@ export class FeishuGateway {
     }
 
     return tool;
+  }
+
+  private toToolView(update: {
+    toolCallId?: string;
+    toolName?: string;
+    status?: string;
+    title?: string;
+    query?: string;
+    url?: string;
+    command?: string;
+    path?: string;
+    error?: string;
+  }): ToolView | undefined {
+    if (!update.toolCallId) {
+      return undefined;
+    }
+    const cmd = update.command ?? update.query ?? update.url ?? update.title ?? update.toolName;
+    return {
+      id: update.toolCallId,
+      name: update.toolName,
+      status: update.status,
+      cmd,
+      query: update.query,
+      url: update.url,
+      path: update.path,
+      error: update.error,
+    };
   }
 
   private formatToolStatus(status?: string): string {
