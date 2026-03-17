@@ -35,7 +35,18 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcSucce
 
 export type InitializeParams = {
   protocolVersion: number;
-  clientCapabilities: Record<string, unknown>;
+  clientCapabilities: ClientCapabilities;
+};
+
+export type FileSystemCapability = {
+  readTextFile?: boolean;
+  writeTextFile?: boolean;
+};
+
+export type ClientCapabilities = {
+  fs?: FileSystemCapability;
+  terminal?: boolean;
+  _meta?: Record<string, unknown>;
 };
 
 export type ContentBlock =
@@ -95,6 +106,59 @@ export type SessionUpdateNotification = {
     size?: number;
     [key: string]: unknown;
   };
+};
+
+export type PermissionOptionKind = string;
+
+export type PermissionOption = {
+  id: string;
+  name: string;
+  kind: PermissionOptionKind;
+};
+
+export type ToolCallLocation = {
+  path?: string;
+  line?: number;
+};
+
+export type ToolCallContent =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: string;
+      [key: string]: unknown;
+    };
+
+export type ToolCallUpdate = {
+  id: string;
+  kind?: string;
+  status?: string;
+  title?: string;
+  rawInput?: unknown;
+  locations?: ToolCallLocation[];
+  content?: ToolCallContent[];
+  [key: string]: unknown;
+};
+
+export type RequestPermissionParams = {
+  sessionId: string;
+  toolCall: ToolCallUpdate;
+  options: PermissionOption[];
+};
+
+export type RequestPermissionCancelledOutcome = {
+  outcome: "cancelled";
+};
+
+export type RequestPermissionSelectedOutcome = {
+  outcome: "selected";
+  optionId: string;
+};
+
+export type RequestPermissionResponse = {
+  outcome: RequestPermissionCancelledOutcome | RequestPermissionSelectedOutcome;
 };
 
 export type InitializeResult = AgentInitialization;

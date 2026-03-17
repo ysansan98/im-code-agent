@@ -2,6 +2,7 @@ import type {
   AgentType,
   BridgeEvent,
   CreateTaskInput,
+  Task,
   WorkspaceConfig,
 } from "@im-code-agent/shared";
 
@@ -234,6 +235,10 @@ export class TaskRunner {
     return this.#runningConversations.has(conversationId);
   }
 
+  getTask(taskId: string): Task | undefined {
+    return this.sessionManager.getTask(taskId);
+  }
+
   handleAgentEvent(event: AgentEvent): BridgeEvent | undefined {
     if (event.type === "agent.output") {
       const bridgeEvent: BridgeEvent = {
@@ -241,6 +246,39 @@ export class TaskRunner {
         taskId: event.taskId,
         stream: "agent",
         chunk: event.text,
+        timestamp: new Date().toISOString(),
+      };
+      this.recordEvent(event.taskId, bridgeEvent);
+      return bridgeEvent;
+    }
+
+    if (event.type === "agent.approval_requested") {
+      const bridgeEvent: BridgeEvent = {
+        type: "task.approval_requested",
+        taskId: event.taskId,
+        request: event.request,
+        timestamp: new Date().toISOString(),
+      };
+      this.recordEvent(event.taskId, bridgeEvent);
+      return bridgeEvent;
+    }
+
+    if (event.type === "agent.approval_resolved") {
+      const bridgeEvent: BridgeEvent = {
+        type: "task.approval_resolved",
+        taskId: event.taskId,
+        decision: event.decision,
+        timestamp: new Date().toISOString(),
+      };
+      this.recordEvent(event.taskId, bridgeEvent);
+      return bridgeEvent;
+    }
+
+    if (event.type === "agent.tool_update") {
+      const bridgeEvent: BridgeEvent = {
+        type: "task.tool_update",
+        taskId: event.taskId,
+        update: event.update,
         timestamp: new Date().toISOString(),
       };
       this.recordEvent(event.taskId, bridgeEvent);

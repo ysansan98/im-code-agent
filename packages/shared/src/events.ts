@@ -6,6 +6,22 @@ type BridgeEventBase = {
   timestamp: string;
 };
 
+export type ToolInvocation = {
+  updateType: string;
+  toolCallId: string;
+  toolName: string;
+  toolNameSource: string;
+  kind: string;
+  status: string;
+  title?: string;
+  query?: string;
+  url?: string;
+  command?: string;
+  path?: string;
+  error?: string;
+  fieldPaths: string[];
+};
+
 export type TaskStartedEvent = BridgeEventBase & {
   type: "task.started";
   workspaceId: string;
@@ -26,6 +42,11 @@ export type TaskApprovalRequestedEvent = BridgeEventBase & {
 export type TaskApprovalResolvedEvent = BridgeEventBase & {
   type: "task.approval_resolved";
   decision: ApprovalDecision;
+};
+
+export type TaskToolUpdateEvent = BridgeEventBase & {
+  type: "task.tool_update";
+  update: ToolInvocation;
 };
 
 export type TaskCompletedEvent = BridgeEventBase & {
@@ -49,6 +70,7 @@ export type BridgeEvent =
   | TaskOutputEvent
   | TaskApprovalRequestedEvent
   | TaskApprovalResolvedEvent
+  | TaskToolUpdateEvent
   | TaskCompletedEvent
   | TaskFailedEvent
   | TaskCancelledEvent;
