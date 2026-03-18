@@ -4,7 +4,6 @@ export type WorkspaceConfig = {
   id: string;
   name: string;
   cwd: string;
-  blockedPaths?: string[];
   allowedAgents: AgentType[];
 };
 

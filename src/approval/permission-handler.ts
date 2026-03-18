@@ -208,8 +208,8 @@ export function createPermissionRequestHandler(args: {
     const policy = evaluatePolicy({
       kind,
       workspace,
-      hasSessionAllowAll: approvalGateway.isSessionAllowAll(taskId),
-      targetPath: request.target,
+      hasSessionAllowAll:
+        approvalGateway.isSessionAllowAll(taskId) || taskRunner.isTaskFullAccess(taskId),
     });
 
     if (policy.type === "allow") {

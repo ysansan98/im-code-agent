@@ -1,6 +1,5 @@
 import type { ApprovalKind } from "#shared";
 import type { WorkspaceConfig } from "#shared";
-import { isAbsolute, resolve } from "node:path";
 
 export type PolicyDecision =
   | { type: "allow" }
@@ -11,29 +10,10 @@ type EvaluatePolicyInput = {
   kind: ApprovalKind;
   workspace: WorkspaceConfig;
   hasSessionAllowAll: boolean;
-  targetPath?: string;
 };
 
-function isBlockedPath(targetPath: string, workspace: WorkspaceConfig): boolean {
-  if (!workspace.blockedPaths || workspace.blockedPaths.length === 0) {
-    return false;
-  }
-
-  const absoluteTarget = isAbsolute(targetPath) ? targetPath : resolve(workspace.cwd, targetPath);
-  return workspace.blockedPaths.some((blocked) => {
-    const absoluteBlocked = isAbsolute(blocked) ? blocked : resolve(workspace.cwd, blocked);
-    return absoluteTarget === absoluteBlocked || absoluteTarget.startsWith(`${absoluteBlocked}/`);
-  });
-}
-
 export function evaluatePolicy(input: EvaluatePolicyInput): PolicyDecision {
-  const { kind, workspace, hasSessionAllowAll, targetPath } = input;
-  if (targetPath && isBlockedPath(targetPath, workspace)) {
-    return {
-      type: "deny",
-      reason: `Path is blocked by workspace policy: ${targetPath}`,
-    };
-  }
+  const { kind, hasSessionAllowAll } = input;
 
   if (hasSessionAllowAll) {
     return { type: "allow" };

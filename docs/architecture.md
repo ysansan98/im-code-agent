@@ -325,7 +325,6 @@ export type BridgeConfig = {
     name: string;
     cwd: string;
     approvalMode: "ask" | "read-auto" | "read-write-auto";
-    blockedPaths?: string[];
     allowedAgents: Array<"codex" | "claude-code">;
   }>;
 };
@@ -336,7 +335,6 @@ export type BridgeConfig = {
 - `workspace` 必须预注册
 - 飞书侧只能引用 `workspaceId`
 - `cwd` 不允许由飞书自由传入
-- 黑名单目录必须做真实路径校验
 - 每个工作区单独约束允许的 agent
 
 ## 任务模型

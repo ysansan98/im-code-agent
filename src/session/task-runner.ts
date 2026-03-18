@@ -41,6 +41,7 @@ export class TaskRunner {
   readonly #eventListeners = new Map<string, StartTaskOptions["onEvent"]>();
   readonly #conversations = new Map<string, ConversationState>();
   readonly #runningConversations = new Set<string>();
+  readonly #taskRuntimeArgs = new Map<string, string[]>();
 
   constructor(
     private readonly sessionManager: SessionManager,
@@ -54,6 +55,7 @@ export class TaskRunner {
     options?: StartTaskOptions,
   ): Promise<{ taskId: string; events: BridgeEvent[] }> {
     const task = this.sessionManager.createTask(input, workspace);
+    this.#taskRuntimeArgs.set(task.id, options?.runtimeArgs ?? []);
     this.#eventLog.set(task.id, []);
     if (options?.onEvent) {
       this.#eventListeners.set(task.id, options.onEvent);
@@ -193,6 +195,7 @@ export class TaskRunner {
       sessionId: started.sessionId,
       runtimeArgs: options?.runtimeArgs ?? [],
     };
+    this.#taskRuntimeArgs.set(task.id, state.runtimeArgs);
     this.#conversations.set(conversationId, state);
     this.logger.info("conversation created", {
       conversationId,
@@ -238,6 +241,7 @@ export class TaskRunner {
     }
 
     this.#conversations.delete(conversationId);
+    this.#taskRuntimeArgs.delete(state.taskId);
     this.sessionManager.updateTaskStatus(state.taskId, "cancelled");
     await this.agentProcess.stop(state.taskId);
     this.logger.info("conversation reset", {
@@ -253,6 +257,11 @@ export class TaskRunner {
 
   getTask(taskId: string): Task | undefined {
     return this.sessionManager.getTask(taskId);
+  }
+
+  isTaskFullAccess(taskId: string): boolean {
+    const args = this.#taskRuntimeArgs.get(taskId) ?? [];
+    return this.hasApprovalPolicyNever(args);
   }
 
   handleAgentEvent(event: AgentEvent): BridgeEvent | undefined {
@@ -379,5 +388,14 @@ export class TaskRunner {
     this.#eventLog.delete(taskId);
     this.#eventListeners.delete(taskId);
     return events;
+  }
+
+  private hasApprovalPolicyNever(args: string[]): boolean {
+    for (let index = 0; index < args.length - 1; index += 1) {
+      if (args[index] === "-c" && args[index + 1] === 'approval_policy="never"') {
+        return true;
+      }
+    }
+    return false;
   }
 }
