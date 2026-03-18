@@ -1,9 +1,5 @@
 import type { CreateTaskInput, Task, TaskStatus, WorkspaceConfig } from "@im-code-agent/shared";
 
-function createTaskStatus(status: TaskStatus): TaskStatus {
-  return status;
-}
-
 export class SessionManager {
   readonly #tasks = new Map<string, Task>();
 
@@ -15,7 +11,7 @@ export class SessionManager {
       agent: input.agent,
       prompt: input.prompt,
       cwd: workspace.cwd,
-      status: createTaskStatus("pending"),
+      status: "pending",
       createdAt: now,
     };
 

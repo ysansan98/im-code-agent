@@ -1,23 +1,28 @@
-import { homedir } from "node:os";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-type ChatStateData = {
+type SessionStateData = {
   chatCwds?: Record<string, string>;
   chatSessionIds?: Record<string, string>;
 };
 
-export type ChatState = {
+export type SessionState = {
   chatCwds: Map<string, string>;
   chatSessionIds: Map<string, string>;
 };
 
-export class ChatStateStore {
+export interface SessionStateStore {
+  loadState(): Promise<SessionState>;
+  saveState(state: SessionState): Promise<void>;
+}
+
+export class FileSessionStateStore implements SessionStateStore {
   constructor(
     private readonly filePath = resolve(homedir(), ".im-code-agent", "chat-state.json"),
   ) {}
 
-  async loadState(): Promise<ChatState> {
+  async loadState(): Promise<SessionState> {
     const raw = await readFile(this.filePath, "utf8").catch(() => undefined);
     if (!raw) {
       return {
@@ -25,17 +30,17 @@ export class ChatStateStore {
         chatSessionIds: new Map(),
       };
     }
-    const parsed = JSON.parse(raw) as ChatStateData;
+    const parsed = JSON.parse(raw) as SessionStateData;
     return {
       chatCwds: new Map(Object.entries(parsed.chatCwds ?? {})),
       chatSessionIds: new Map(Object.entries(parsed.chatSessionIds ?? {})),
     };
   }
 
-  async saveState(chatState: ChatState): Promise<void> {
-    const payload: ChatStateData = {
-      chatCwds: Object.fromEntries(chatState.chatCwds.entries()),
-      chatSessionIds: Object.fromEntries(chatState.chatSessionIds.entries()),
+  async saveState(state: SessionState): Promise<void> {
+    const payload: SessionStateData = {
+      chatCwds: Object.fromEntries(state.chatCwds.entries()),
+      chatSessionIds: Object.fromEntries(state.chatSessionIds.entries()),
     };
     const dir = dirname(this.filePath);
     await mkdir(dir, { recursive: true });

@@ -2,8 +2,8 @@ import { stat } from "node:fs/promises";
 
 import type { WorkspaceConfig } from "@im-code-agent/shared";
 
+import { FileSessionStateStore, type SessionStateStore } from "../session/session-state-store.ts";
 import { TaskRunner } from "../session/task-runner.ts";
-import { ChatStateStore } from "./chat-state-store.ts";
 
 type StartOptions = {
   chatId: string;
@@ -15,12 +15,14 @@ type StartOptions = {
 export class FeishuSessionController {
   readonly #chatCwds = new Map<string, string>();
   readonly #chatSessionIds = new Map<string, string>();
-  readonly #chatStateStore = new ChatStateStore();
 
-  constructor(private readonly workspaces: WorkspaceConfig[]) {}
+  constructor(
+    private readonly workspaces: WorkspaceConfig[],
+    private readonly stateStore: SessionStateStore = new FileSessionStateStore(),
+  ) {}
 
   async restore(): Promise<{ persistedChats: number; persistedSessions: number }> {
-    const persisted = await this.#chatStateStore.loadState();
+    const persisted = await this.stateStore.loadState();
     let sanitized = false;
     const fallbackCwd = this.workspaces[0]?.cwd;
 
@@ -151,7 +153,7 @@ export class FeishuSessionController {
   }
 
   private async persist(): Promise<void> {
-    await this.#chatStateStore.saveState({
+    await this.stateStore.saveState({
       chatCwds: this.#chatCwds,
       chatSessionIds: this.#chatSessionIds,
     });
