@@ -148,17 +148,4 @@ export type RequestPermissionParams = {
   options: PermissionOption[];
 };
 
-export type RequestPermissionCancelledOutcome = {
-  outcome: "cancelled";
-};
-
-export type RequestPermissionSelectedOutcome = {
-  outcome: "selected";
-  optionId: string;
-};
-
-export type RequestPermissionResponse = {
-  outcome: RequestPermissionCancelledOutcome | RequestPermissionSelectedOutcome;
-};
-
 export type InitializeResult = AgentInitialization;

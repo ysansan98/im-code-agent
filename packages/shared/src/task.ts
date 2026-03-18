@@ -1,15 +1,12 @@
 import type { AgentType } from "./agent.ts";
 
-export const TASK_STATUSES = [
-  "pending",
-  "running",
-  "waiting_approval",
-  "completed",
-  "failed",
-  "cancelled",
-] as const;
-
-export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type Task = {
   id: string;

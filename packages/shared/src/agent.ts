@@ -1,6 +1,4 @@
-export const AGENT_TYPES = ["codex", "claude-code"] as const;
-
-export type AgentType = (typeof AGENT_TYPES)[number];
+export type AgentType = "codex" | "claude-code";
 
 export type AgentCommandConfig = {
   command: string;

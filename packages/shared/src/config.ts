@@ -1,8 +1,6 @@
 import type { AgentCommandConfig, AgentType } from "./agent.ts";
 
-export const APPROVAL_MODES = ["ask", "read-auto", "read-write-auto"] as const;
-
-export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+export type ApprovalMode = "ask" | "read-auto" | "read-write-auto";
 
 export type WorkspaceConfig = {
   id: string;
