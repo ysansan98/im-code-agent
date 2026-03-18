@@ -19,15 +19,11 @@ const DEFAULT_CONFIG_ENV_CONTENT = `# Bridge 基础配置
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
 
-# 可选：开启事件加密/校验时配置
-FEISHU_ENCRYPT_KEY=
-FEISHU_VERIFICATION_TOKEN=
+# 可选：true 时默认 Full Access
+YOLO_MODE=false
 
 # 可选：默认工作目录，不填则使用 bridge 启动目录
 WORKSPACE_DEFAULT_CWD=
-
-# 可选：ask | read-auto | read-write-auto
-WORKSPACE_APPROVAL_MODE=ask
 `;
 
 function parseEnvFile(content: string): EnvMap {
@@ -136,12 +132,10 @@ export async function loadConfig(): Promise<BridgeConfig> {
 
   const appId = getValue("FEISHU_APP_ID");
   const appSecret = getValue("FEISHU_APP_SECRET");
+  const yoloMode = getValue("YOLO_MODE")?.trim().toLowerCase() === "true";
   const workspaceDefaultCwd = getValue("WORKSPACE_DEFAULT_CWD")?.trim();
   const resolvedDefaultCwd = workspaceDefaultCwd ? resolve(workspaceDefaultCwd) : process.cwd();
   const defaultCwd = (await isDirectory(resolvedDefaultCwd)) ? resolvedDefaultCwd : process.cwd();
-  const approvalMode =
-    (getValue("WORKSPACE_APPROVAL_MODE") as "ask" | "read-auto" | "read-write-auto" | undefined) ??
-    "ask";
 
   return {
     feishu:
@@ -149,10 +143,9 @@ export async function loadConfig(): Promise<BridgeConfig> {
         ? {
             appId,
             appSecret,
-            encryptKey: getValue("FEISHU_ENCRYPT_KEY"),
-            verificationToken: getValue("FEISHU_VERIFICATION_TOKEN"),
           }
         : undefined,
+    yoloMode,
     agents: {
       codex: {
         command: nodeCommand,
@@ -164,7 +157,6 @@ export async function loadConfig(): Promise<BridgeConfig> {
         id: "local-default",
         name: "Local Default",
         cwd: defaultCwd,
-        approvalMode,
         allowedAgents: ["codex"],
       },
     ],

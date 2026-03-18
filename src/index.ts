@@ -11,6 +11,7 @@ import { createLogger } from "./utils/logger.ts";
 export async function startBridge(): Promise<void> {
   const config = await loadConfig();
   const logger = createLogger();
+
   const approvalStore = new ApprovalStore();
   const approvalGateway = new ApprovalGateway(approvalStore, logger);
   const sessionManager = new SessionManager();
@@ -36,7 +37,14 @@ export async function startBridge(): Promise<void> {
 
   taskRunner = new TaskRunner(sessionManager, agentProcess, logger);
   const feishuGateway = config.feishu
-    ? new FeishuGateway(config.feishu, config.workspaces, taskRunner, approvalGateway, logger)
+    ? new FeishuGateway(
+        config.feishu,
+        config.workspaces,
+        taskRunner,
+        approvalGateway,
+        logger,
+        config.yoloMode,
+      )
     : undefined;
 
   if (feishuGateway) {
@@ -46,5 +54,6 @@ export async function startBridge(): Promise<void> {
   logger.info("bridge started", {
     workspaceCount: config.workspaces.length,
     feishuEnabled: Boolean(feishuGateway),
+    yoloMode: config.yoloMode,
   });
 }

@@ -36,6 +36,7 @@ export type AgentRunOptions = {
   agent: AgentType;
   cwd: string;
   resumeSessionId?: string;
+  runtimeArgs?: string[];
 };
 
 type PendingRequest = {
@@ -327,12 +328,13 @@ export class AgentProcess {
     }
 
     const command = resolveAgentCommand(this.config, options.agent);
+    const spawnArgs = [...(command.args ?? []), ...(options.runtimeArgs ?? [])];
     const health = await this.checkHealth(options.agent);
     if (!health.commandAvailable) {
       throw new AgentProcessError("agent_command_unavailable", health.notes.join("; "));
     }
 
-    const child = spawn(command.command, command.args ?? [], {
+    const child = spawn(command.command, spawnArgs, {
       cwd: options.cwd,
       env: {
         ...process.env,
@@ -368,7 +370,7 @@ export class AgentProcess {
         taskId: options.taskId,
         agent: options.agent,
         command: command.command,
-        args: command.args ?? [],
+        args: spawnArgs,
         cwd: options.cwd,
       });
     });

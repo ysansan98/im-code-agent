@@ -39,17 +39,6 @@ export function evaluatePolicy(input: EvaluatePolicyInput): PolicyDecision {
     return { type: "allow" };
   }
 
-  if (kind === "read") {
-    if (workspace.approvalMode === "ask") {
-      return { type: "ask", reason: "Approval required for read in ask mode" };
-    }
-    return { type: "allow" };
-  }
-
-  if (kind === "write" && workspace.approvalMode === "read-write-auto") {
-    return { type: "allow" };
-  }
-
   return {
     type: "ask",
     reason: `Approval required for ${kind}`,

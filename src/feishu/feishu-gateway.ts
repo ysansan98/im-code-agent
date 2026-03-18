@@ -1,4 +1,5 @@
 import lark from "@larksuiteoapi/node-sdk";
+import { randomUUID } from "node:crypto";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -20,7 +21,7 @@ import {
 } from "./command-router.ts";
 import { FeishuCardRenderer, TaskCardStreamer } from "./card-renderer.ts";
 import { MessageEntryQueue } from "./message-entry-queue.ts";
-import { FeishuSessionController } from "./session-controller.ts";
+import { FeishuSessionController, type ChatAccessMode } from "./session-controller.ts";
 
 type IncomingMessage = {
   sender: { sender_type: string };
@@ -38,6 +39,13 @@ type ApprovalCardBinding = {
   taskId: string;
 };
 
+function buildCodexRuntimeArgs(mode: ChatAccessMode): string[] {
+  if (mode !== "full-access") {
+    return [];
+  }
+  return ["-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"'];
+}
+
 export class FeishuGateway {
   readonly #client: lark.Client;
   readonly #wsClient: lark.WSClient;
@@ -46,6 +54,10 @@ export class FeishuGateway {
   readonly #sessionController: FeishuSessionController;
   readonly #cardRenderer = new FeishuCardRenderer();
   readonly #approvalCards = new Map<string, ApprovalCardBinding>();
+  readonly #permissionCardMessages = new Map<string, string>();
+  readonly #permissionCardRevisions = new Map<string, number>();
+  readonly #handledPermissionCardIds = new Map<string, number>();
+  readonly #handledCardActionEventIds = new Map<string, number>();
   readonly #patchMinIntervalMs = 280;
 
   constructor(
@@ -54,8 +66,12 @@ export class FeishuGateway {
     private readonly taskRunner: TaskRunner,
     private readonly approvalGateway: ApprovalGateway,
     private readonly logger: Logger,
+    yoloMode = false,
   ) {
-    this.#sessionController = new FeishuSessionController(workspaces);
+    this.#sessionController = new FeishuSessionController(
+      workspaces,
+      yoloMode ? "full-access" : "standard",
+    );
 
     this.#client = new lark.Client({
       appId: config.appId,
@@ -68,10 +84,7 @@ export class FeishuGateway {
       loggerLevel: lark.LoggerLevel.info,
     });
 
-    this.#eventDispatcher = new lark.EventDispatcher({
-      encryptKey: config.encryptKey,
-      verificationToken: config.verificationToken,
-    })
+    this.#eventDispatcher = new lark.EventDispatcher({})
       .register({
         "im.message.receive_v1": async (data) => {
           await this.handleIncomingMessage(data as IncomingMessage);
@@ -85,8 +98,8 @@ export class FeishuGateway {
       }
     ).register({
       "card.action.trigger": async (data: unknown) => {
-        await this.handleCardAction((data ?? {}) as Record<string, unknown>);
-        return {};
+        const response = await this.handleCardAction((data ?? {}) as Record<string, unknown>);
+        return response ?? {};
       },
     });
 
@@ -198,6 +211,11 @@ export class FeishuGateway {
       return;
     }
 
+    if (command.type === "show-access") {
+      await this.sendPermissionCard(chatId);
+      return;
+    }
+
     await this.runConversationTask({
       chatId,
       messageId: data.message.message_id,
@@ -232,6 +250,7 @@ export class FeishuGateway {
       },
       params.workspace,
       {
+        runtimeArgs: buildCodexRuntimeArgs(this.#sessionController.getAccessMode(params.chatId)),
         resumeSessionId: this.#sessionController.getResumeSessionId(params.chatId),
         onEvent: (event) => {
           this.onTaskEvent(params.chatId, event, streamer);
@@ -319,11 +338,93 @@ export class FeishuGateway {
     await this.sendText(chatId, "已打断当前任务。");
   }
 
-  private async handleCardAction(data: Record<string, unknown>): Promise<void> {
+  private async handleCardAction(
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined> {
+    this.logger.info("card action received", {
+      topLevelKeys: Object.keys(data),
+      eventId: this.extractCardActionEventId(data),
+      actionMessageId: this.extractActionMessageId(data),
+    });
+
+    this.gcHandledCardActionEventIds();
+    const eventId = this.extractCardActionEventId(data);
+    if (eventId && this.#handledCardActionEventIds.has(eventId)) {
+      this.logger.info("card action ignored: duplicated event", { eventId });
+      return undefined;
+    }
+    if (eventId) {
+      this.#handledCardActionEventIds.set(eventId, Date.now());
+    }
+
     const action = parseCardActionValue(data);
     if (!action) {
       this.logger.warn("card action ignored: invalid payload");
-      return;
+      return undefined;
+    }
+
+    if (action.type === "access") {
+      this.gcHandledPermissionCardIds();
+      const chatId = action.chatId;
+      const actionMessageId = this.extractActionMessageId(data);
+      this.logger.info("permission card action parsed", {
+        chatId,
+        cardId: action.cardId,
+        action: action.action,
+        mode: action.action === "set" ? action.mode : undefined,
+        actionMessageId,
+      });
+      if (this.#handledPermissionCardIds.has(action.cardId)) {
+        this.logger.info("permission card action ignored: card already locked", {
+          chatId,
+          messageId: actionMessageId,
+          cardId: action.cardId,
+        });
+        return undefined;
+      }
+      this.#handledPermissionCardIds.set(action.cardId, Date.now());
+      try {
+        if (action.action === "clear") {
+          await this.#sessionController.clearAccessOverride(chatId, this.taskRunner);
+        } else {
+          await this.#sessionController.setAccessMode(chatId, action.mode, this.taskRunner);
+        }
+        this.logger.info("permission card action applied", {
+          chatId,
+          cardId: action.cardId,
+          effectiveMode: this.#sessionController.getAccessMode(chatId),
+        });
+      } catch (error) {
+        this.#handledPermissionCardIds.delete(action.cardId);
+        this.logger.warn("permission card action failed, unlock card", {
+          chatId,
+          cardId: action.cardId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      const card = await this.updatePermissionCard(
+        chatId,
+        actionMessageId,
+        action.cardId,
+        true,
+        undefined,
+        false,
+      );
+      if (!card) {
+        this.logger.warn("permission card action applied but card update skipped", {
+          chatId,
+          cardId: action.cardId,
+          actionMessageId,
+        });
+        return undefined;
+      }
+      return {
+        card: {
+          type: "raw",
+          data: card,
+        },
+      };
     }
 
     const decidedBy =
@@ -344,6 +445,182 @@ export class FeishuGateway {
 
     this.approvalGateway.resolve(decision);
     void this.patchApprovalCardByDecision(decision);
+    return undefined;
+  }
+
+  private async sendPermissionCard(chatId: string): Promise<void> {
+    const cardId = randomUUID();
+    const version = 1;
+    this.#permissionCardRevisions.set(cardId, version);
+    const card = this.#cardRenderer.buildAccessModeCard({
+      cardId,
+      chatId,
+      defaultMode: this.#sessionController.getDefaultAccessMode(),
+      overrideMode: this.#sessionController.getAccessOverride(chatId),
+      readonly: false,
+    });
+    const messageId = await this.sendCard(chatId, card);
+    this.#permissionCardMessages.set(cardId, messageId);
+    this.logger.info("permission card sent", {
+      chatId,
+      cardId,
+      version,
+      messageId,
+      defaultMode: this.#sessionController.getDefaultAccessMode(),
+      overrideMode: this.#sessionController.getAccessOverride(chatId),
+      effectiveMode: this.#sessionController.getAccessMode(chatId),
+    });
+  }
+
+  private async updatePermissionCard(
+    chatId: string,
+    messageId?: string,
+    cardId?: string,
+    lockAfterPatch = false,
+    readonlyReason?: string,
+    patch = true,
+  ): Promise<Record<string, unknown> | undefined> {
+    const resolvedCardId = cardId ?? randomUUID();
+    const nextRevision = (this.#permissionCardRevisions.get(resolvedCardId) ?? 1) + 1;
+    this.#permissionCardRevisions.set(resolvedCardId, nextRevision);
+    const card = this.#cardRenderer.buildAccessModeCard({
+      cardId: resolvedCardId,
+      chatId,
+      defaultMode: this.#sessionController.getDefaultAccessMode(),
+      overrideMode: this.#sessionController.getAccessOverride(chatId),
+      readonly: lockAfterPatch,
+      readonlyReason,
+    });
+    const fromActionMessageId = messageId;
+    const fromCardMap = this.#permissionCardMessages.get(resolvedCardId);
+    const targetMessageId = fromActionMessageId ?? fromCardMap;
+    if (!targetMessageId) {
+      this.logger.warn("permission card update skipped: message id not found", {
+        chatId,
+        cardId: resolvedCardId,
+      });
+      return undefined;
+    }
+    this.logger.info("permission card patch start", {
+      chatId,
+      cardId: resolvedCardId,
+      version: nextRevision,
+      targetMessageId,
+      targetSource: fromActionMessageId ? "action-message-id" : "card-id-map",
+      lockAfterPatch,
+      overrideMode: this.#sessionController.getAccessOverride(chatId),
+      effectiveMode: this.#sessionController.getAccessMode(chatId),
+    });
+    try {
+      this.#permissionCardMessages.set(resolvedCardId, targetMessageId);
+      if (patch) {
+        await this.patchCard(targetMessageId, card);
+        this.logger.info("permission card patch done", {
+          chatId,
+          cardId: resolvedCardId,
+          version: nextRevision,
+          targetMessageId,
+          lockAfterPatch,
+        });
+      } else {
+        this.logger.info("permission card patch skipped: callback response mode", {
+          chatId,
+          cardId: resolvedCardId,
+          version: nextRevision,
+          targetMessageId,
+          lockAfterPatch,
+        });
+      }
+      return card;
+    } catch (error) {
+      this.logger.warn("patch permission card failed", {
+        chatId,
+        messageId: targetMessageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  private extractActionMessageId(data: Record<string, unknown>): string | undefined {
+    const topLevel = typeof data.open_message_id === "string" ? data.open_message_id : undefined;
+    if (topLevel) {
+      return topLevel;
+    }
+
+    const eventObj =
+      data.event && typeof data.event === "object"
+        ? (data.event as Record<string, unknown>)
+        : undefined;
+    if (eventObj) {
+      if (typeof eventObj.open_message_id === "string") {
+        return eventObj.open_message_id;
+      }
+      const contextObj =
+        eventObj.context && typeof eventObj.context === "object"
+          ? (eventObj.context as Record<string, unknown>)
+          : undefined;
+      if (contextObj && typeof contextObj.open_message_id === "string") {
+        return contextObj.open_message_id;
+      }
+      const messageObj =
+        eventObj.message && typeof eventObj.message === "object"
+          ? (eventObj.message as Record<string, unknown>)
+          : undefined;
+      if (messageObj && typeof messageObj.message_id === "string") {
+        return messageObj.message_id;
+      }
+    }
+
+    const messageObj =
+      data.message && typeof data.message === "object"
+        ? (data.message as Record<string, unknown>)
+        : undefined;
+    if (messageObj && typeof messageObj.message_id === "string") {
+      return messageObj.message_id;
+    }
+    return undefined;
+  }
+
+  private extractCardActionEventId(data: Record<string, unknown>): string | undefined {
+    if (typeof data.event_id === "string") {
+      return data.event_id;
+    }
+    const headerObj =
+      data.header && typeof data.header === "object"
+        ? (data.header as Record<string, unknown>)
+        : undefined;
+    if (headerObj && typeof headerObj.event_id === "string") {
+      return headerObj.event_id;
+    }
+    const eventObj =
+      data.event && typeof data.event === "object"
+        ? (data.event as Record<string, unknown>)
+        : undefined;
+    if (eventObj && typeof eventObj.event_id === "string") {
+      return eventObj.event_id;
+    }
+    return undefined;
+  }
+
+  private gcHandledCardActionEventIds(): void {
+    const expireMs = 60_000;
+    const now = Date.now();
+    for (const [eventId, ts] of this.#handledCardActionEventIds.entries()) {
+      if (now - ts > expireMs) {
+        this.#handledCardActionEventIds.delete(eventId);
+      }
+    }
+  }
+
+  private gcHandledPermissionCardIds(): void {
+    const expireMs = 10 * 60_000;
+    const now = Date.now();
+    for (const [cardId, ts] of this.#handledPermissionCardIds.entries()) {
+      if (now - ts > expireMs) {
+        this.#handledPermissionCardIds.delete(cardId);
+      }
+    }
   }
 
   private async sendApprovalCard(chatId: string, request: ApprovalRequest): Promise<void> {

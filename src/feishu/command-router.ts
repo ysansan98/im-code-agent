@@ -13,14 +13,35 @@ export type UserCommand =
   | {
       type: "new";
       cwd?: string;
+    }
+  | {
+      type: "show-access";
     };
 
-export type CardActionValue = {
+export type ApprovalCardActionValue = {
+  type: "approval";
   requestId: string;
   taskId: string;
   decision: "approved" | "rejected";
   comment?: string;
 };
+
+export type AccessCardActionValue =
+  | {
+      type: "access";
+      cardId: string;
+      chatId: string;
+      action: "set";
+      mode: "standard" | "full-access";
+    }
+  | {
+      type: "access";
+      cardId: string;
+      chatId: string;
+      action: "clear";
+    };
+
+export type CardActionValue = ApprovalCardActionValue | AccessCardActionValue;
 
 export function isInterruptCommand(text: string): boolean {
   return text === "/stop" || text === "/interrupt";
@@ -38,6 +59,12 @@ export async function parseUserCommand(
   rawPrompt: string,
   currentCwd: string,
 ): Promise<UserCommand> {
+  if (rawPrompt === "/perm") {
+    return {
+      type: "show-access",
+    };
+  }
+
   if (rawPrompt === "/new") {
     return {
       type: "new",
@@ -84,11 +111,38 @@ export function parseCardActionValue(data: Record<string, unknown>): CardActionV
   }
   const item = value as Record<string, unknown>;
   if (
+    item.type === "access" &&
+    typeof item.cardId === "string" &&
+    typeof item.chatId === "string" &&
+    (item.action === "set" || item.action === "clear")
+  ) {
+    if (item.action === "clear") {
+      return {
+        type: "access",
+        cardId: item.cardId,
+        chatId: item.chatId,
+        action: "clear",
+      };
+    }
+    if (item.mode === "standard" || item.mode === "full-access") {
+      return {
+        type: "access",
+        cardId: item.cardId,
+        chatId: item.chatId,
+        action: "set",
+        mode: item.mode,
+      };
+    }
+    return null;
+  }
+
+  if (
     typeof item.requestId === "string" &&
     typeof item.taskId === "string" &&
     (item.decision === "approved" || item.decision === "rejected")
   ) {
     return {
+      type: "approval",
       requestId: item.requestId,
       taskId: item.taskId,
       decision: item.decision,

@@ -36,15 +36,11 @@
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
 
-# 可选：开启事件加密/校验时配置
-FEISHU_ENCRYPT_KEY=
-FEISHU_VERIFICATION_TOKEN=
+# 可选：true 时默认 Full Access
+YOLO_MODE=false
 
 # 可选：默认工作目录，不填则使用 bridge 启动目录
 WORKSPACE_DEFAULT_CWD=
-
-# 可选：ask | read-auto | read-write-auto
-WORKSPACE_APPROVAL_MODE=ask
 ```
 
 也支持环境变量覆盖（优先级高于配置文件）：
@@ -54,13 +50,7 @@ WORKSPACE_APPROVAL_MODE=ask
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-```
-
-可选项（开启飞书事件加密/校验时）：
-
-```bash
-export FEISHU_ENCRYPT_KEY=xxx
-export FEISHU_VERIFICATION_TOKEN=xxx
+export YOLO_MODE=false
 ```
 
 启动：
@@ -81,6 +71,7 @@ vp run dev
 - `/new`：重置当前聊天会话（保留当前工作目录）
 - `/new <path>`：重置会话并切换工作目录（支持绝对路径，或相对当前目录）
 - `/stop` 或 `/interrupt`：立即打断当前执行中的任务
+- `/perm`：查看并通过交互卡片切换权限模式
 
 ### 权限与配置清单
 

@@ -322,6 +322,123 @@ export class FeishuCardRenderer {
     };
   }
 
+  buildAccessModeCard(params: {
+    cardId: string;
+    chatId: string;
+    defaultMode: "standard" | "full-access";
+    overrideMode?: "standard" | "full-access";
+    readonly?: boolean;
+    readonlyReason?: string;
+  }): Record<string, unknown> {
+    const currentMode = params.overrideMode ?? params.defaultMode;
+    const overrideText = params.overrideMode
+      ? this.formatAccessMode(params.overrideMode)
+      : "继承默认";
+    const sourceText = params.overrideMode ? "会话临时覆盖" : "全局默认";
+    const fullActive = currentMode === "full-access";
+    const standardActive = currentMode === "standard" && Boolean(params.overrideMode);
+    const inheritActive = !params.overrideMode;
+
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+        style: {
+          text_size: {
+            "cus-0": {
+              default: "notation",
+              pc: "notation",
+              mobile: "notation",
+            },
+          },
+          color: {
+            foot_gray: {
+              light_mode: "rgba(100,106,115,1)",
+              dark_mode: "rgba(182,188,196,1)",
+            },
+          },
+        },
+      },
+      body: {
+        direction: "vertical",
+        padding: "10px 12px 10px 12px",
+        elements: [
+          {
+            tag: "markdown",
+            content: "**权限模式**",
+          },
+          {
+            tag: "markdown",
+            content: `全局默认: ${this.escapeCardMarkdown(this.formatAccessMode(params.defaultMode))}`,
+          },
+          {
+            tag: "markdown",
+            content: `本会话覆盖: ${this.escapeCardMarkdown(overrideText)}${inheritActive ? " ✅" : ""}`,
+          },
+          {
+            tag: "markdown",
+            content: `当前生效: ${this.escapeCardMarkdown(this.formatAccessMode(currentMode))}（${this.escapeCardMarkdown(sourceText)}） ✅`,
+          },
+          ...(params.readonly
+            ? [
+                {
+                  tag: "markdown",
+                  content: params.readonlyReason ?? "本卡已应用变更，按钮已锁定。",
+                },
+              ]
+            : [
+                {
+                  tag: "column_set",
+                  columns: [
+                    this.buildActionButton(
+                      fullActive ? "本会话 Full Access（当前）" : "本会话 Full Access",
+                      fullActive ? "primary" : "default",
+                      {
+                        type: "access",
+                        cardId: params.cardId,
+                        chatId: params.chatId,
+                        action: "set",
+                        mode: "full-access",
+                      },
+                    ),
+                    this.buildActionButton(
+                      standardActive ? "本会话 Standard（当前）" : "本会话 Standard",
+                      standardActive ? "primary" : "default",
+                      {
+                        type: "access",
+                        cardId: params.cardId,
+                        chatId: params.chatId,
+                        action: "set",
+                        mode: "standard",
+                      },
+                    ),
+                    this.buildActionButton(
+                      inheritActive ? "恢复默认（当前）" : "恢复默认",
+                      inheritActive ? "primary" : "default",
+                      {
+                        type: "access",
+                        cardId: params.cardId,
+                        chatId: params.chatId,
+                        action: "clear",
+                      },
+                    ),
+                  ],
+                },
+              ]),
+          {
+            tag: "div",
+            text: {
+              tag: "plain_text",
+              content: "提示：会话覆盖仅当前会话有效，切换/重置会话后恢复默认。",
+              text_size: "cus-0",
+            },
+          },
+        ],
+      },
+    };
+  }
+
   buildApprovalCard(
     request: ApprovalRequest,
     status: "pending" | "approved" | "rejected" | "expired",
@@ -616,6 +733,34 @@ export class FeishuCardRenderer {
     };
   }
 
+  private buildActionButton(
+    label: string,
+    type: "primary" | "default" | "danger",
+    value: Record<string, string>,
+  ): Record<string, unknown> {
+    return {
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [
+        {
+          tag: "button",
+          type,
+          text: {
+            tag: "plain_text",
+            content: label,
+          },
+          behaviors: [
+            {
+              type: "callback",
+              value,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
   private formatToolStatus(status?: string): string {
     if (!status) {
       return "处理中";
@@ -657,6 +802,10 @@ export class FeishuCardRenderer {
       return "命令";
     }
     return "步骤";
+  }
+
+  private formatAccessMode(mode: "standard" | "full-access"): string {
+    return mode === "full-access" ? "Full Access" : "Standard";
   }
 
   private shorten(text: string, maxLen: number): string {

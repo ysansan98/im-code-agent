@@ -8,13 +8,12 @@ const workspace: WorkspaceConfig = {
   id: "w1",
   name: "w1",
   cwd: "/repo",
-  approvalMode: "ask",
   blockedPaths: ["/repo/secret"],
   allowedAgents: ["codex"],
 };
 
 describe("evaluatePolicy", () => {
-  test("ask mode blocks read by default", () => {
+  test("read asks for approval by default", () => {
     const result = evaluatePolicy({
       kind: "read",
       workspace,
@@ -23,44 +22,26 @@ describe("evaluatePolicy", () => {
     expect(result.type).toBe("ask");
   });
 
-  test("read-auto allows read", () => {
-    const result = evaluatePolicy({
-      kind: "read",
-      workspace: {
-        ...workspace,
-        approvalMode: "read-auto",
-      },
-      hasSessionAllowAll: false,
-    });
-    expect(result).toEqual({ type: "allow" });
-  });
-
-  test("read-write-auto allows write", () => {
+  test("write asks for approval by default", () => {
     const result = evaluatePolicy({
       kind: "write",
-      workspace: {
-        ...workspace,
-        approvalMode: "read-write-auto",
-      },
+      workspace,
       hasSessionAllowAll: false,
     });
-    expect(result).toEqual({ type: "allow" });
+    expect(result.type).toBe("ask");
   });
 
   test("blocked path is denied", () => {
     const result = evaluatePolicy({
       kind: "read",
-      workspace: {
-        ...workspace,
-        approvalMode: "read-auto",
-      },
+      workspace,
       hasSessionAllowAll: false,
       targetPath: "/repo/secret/config.env",
     });
     expect(result.type).toBe("deny");
   });
 
-  test("session allow-all overrides ask", () => {
+  test("session allow-all overrides default ask", () => {
     const result = evaluatePolicy({
       kind: "exec",
       workspace,

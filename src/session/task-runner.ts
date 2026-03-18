@@ -7,10 +7,12 @@ import { SessionManager } from "./session-manager.ts";
 type StartTaskOptions = {
   onEvent?: (event: BridgeEvent) => void | Promise<void>;
   resumeSessionId?: string;
+  runtimeArgs?: string[];
 };
 
 type EnsureConversationOptions = {
   resumeSessionId?: string;
+  runtimeArgs?: string[];
 };
 
 type ConversationState = {
@@ -19,7 +21,20 @@ type ConversationState = {
   agent: AgentType;
   cwd: string;
   sessionId: string;
+  runtimeArgs: string[];
 };
+
+function sameRuntimeArgs(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export class TaskRunner {
   readonly #eventLog = new Map<string, BridgeEvent[]>();
@@ -50,6 +65,7 @@ export class TaskRunner {
         taskId: task.id,
         agent: task.agent,
         cwd: task.cwd,
+        runtimeArgs: options?.runtimeArgs,
       });
       this.recordEvent(task.id, {
         type: "task.started",
@@ -124,6 +140,7 @@ export class TaskRunner {
       input.agent,
       {
         resumeSessionId: options?.resumeSessionId,
+        runtimeArgs: options?.runtimeArgs,
       },
       input.prompt,
     );
@@ -140,7 +157,10 @@ export class TaskRunner {
     let state = this.#conversations.get(conversationId);
     if (
       state &&
-      (state.workspaceId !== workspace.id || state.agent !== agent || state.cwd !== workspace.cwd)
+      (state.workspaceId !== workspace.id ||
+        state.agent !== agent ||
+        state.cwd !== workspace.cwd ||
+        !sameRuntimeArgs(state.runtimeArgs, options?.runtimeArgs ?? []))
     ) {
       await this.resetConversation(conversationId);
       state = undefined;
@@ -163,6 +183,7 @@ export class TaskRunner {
       agent,
       cwd: workspace.cwd,
       resumeSessionId: options?.resumeSessionId,
+      runtimeArgs: options?.runtimeArgs,
     });
     state = {
       taskId: task.id,
@@ -170,6 +191,7 @@ export class TaskRunner {
       agent,
       cwd: workspace.cwd,
       sessionId: started.sessionId,
+      runtimeArgs: options?.runtimeArgs ?? [],
     };
     this.#conversations.set(conversationId, state);
     this.logger.info("conversation created", {

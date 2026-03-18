@@ -39,12 +39,14 @@ export class MessageEntryQueue {
 
     this.#chatQueues.set(chatId, queue);
 
-    void queue.finally(() => {
-      this.complete(messageId);
-      if (this.#chatQueues.get(chatId) === queue) {
-        this.#chatQueues.delete(chatId);
-      }
-    });
+    void queue
+      .finally(() => {
+        this.complete(messageId);
+        if (this.#chatQueues.get(chatId) === queue) {
+          this.#chatQueues.delete(chatId);
+        }
+      })
+      .catch(() => undefined);
 
     return queue;
   }

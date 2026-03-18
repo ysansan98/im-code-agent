@@ -12,14 +12,21 @@ type StartOptions = {
   cwd?: string;
 };
 
+export type ChatAccessMode = "standard" | "full-access";
+
 export class FeishuSessionController {
   readonly #chatCwds = new Map<string, string>();
   readonly #chatSessionIds = new Map<string, string>();
+  readonly #chatAccessModes = new Map<string, ChatAccessMode>();
+  readonly #defaultAccessMode: ChatAccessMode;
 
   constructor(
     private readonly workspaces: WorkspaceConfig[],
+    defaultAccessMode: ChatAccessMode,
     private readonly stateStore: SessionStateStore = new FileSessionStateStore(),
-  ) {}
+  ) {
+    this.#defaultAccessMode = defaultAccessMode;
+  }
 
   async restore(): Promise<{ persistedChats: number; persistedSessions: number }> {
     const persisted = await this.stateStore.loadState();
@@ -86,17 +93,63 @@ export class FeishuSessionController {
     await this.persist();
   }
 
-  async interrupt(chatId: string, taskRunner: TaskRunner): Promise<boolean> {
-    if (!taskRunner.isConversationRunning(chatId)) {
+  getAccessMode(chatId: string): ChatAccessMode {
+    return this.#chatAccessModes.get(chatId) ?? this.#defaultAccessMode;
+  }
+
+  getDefaultAccessMode(): ChatAccessMode {
+    return this.#defaultAccessMode;
+  }
+
+  getAccessOverride(chatId: string): ChatAccessMode | undefined {
+    return this.#chatAccessModes.get(chatId);
+  }
+
+  async setAccessMode(
+    chatId: string,
+    mode: ChatAccessMode,
+    taskRunner: TaskRunner,
+  ): Promise<boolean> {
+    const currentEffectiveMode = this.getAccessMode(chatId);
+    if (currentEffectiveMode === mode) {
       return false;
     }
+    if (mode === this.#defaultAccessMode) {
+      this.#chatAccessModes.delete(chatId);
+    } else {
+      this.#chatAccessModes.set(chatId, mode);
+    }
+    await this.resetConversation(chatId, taskRunner, { keepAccessOverride: true });
+    return true;
+  }
+
+  async clearAccessOverride(chatId: string, taskRunner: TaskRunner): Promise<boolean> {
+    if (!this.#chatAccessModes.has(chatId)) {
+      return false;
+    }
+    this.#chatAccessModes.delete(chatId);
     await this.resetConversation(chatId, taskRunner);
     return true;
   }
 
-  async resetConversation(chatId: string, taskRunner: TaskRunner): Promise<void> {
+  async interrupt(chatId: string, taskRunner: TaskRunner): Promise<boolean> {
+    if (!taskRunner.isConversationRunning(chatId)) {
+      return false;
+    }
+    await this.resetConversation(chatId, taskRunner, { keepAccessOverride: true });
+    return true;
+  }
+
+  async resetConversation(
+    chatId: string,
+    taskRunner: TaskRunner,
+    options?: { keepAccessOverride?: boolean },
+  ): Promise<void> {
     await taskRunner.resetConversation(chatId);
     this.#chatSessionIds.delete(chatId);
+    if (!options?.keepAccessOverride) {
+      this.#chatAccessModes.delete(chatId);
+    }
     await this.persist();
   }
 
