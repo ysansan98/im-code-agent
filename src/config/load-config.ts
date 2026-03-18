@@ -15,7 +15,6 @@ const DEFAULT_CONFIG_ENV_PATH = resolve(homedir(), ".im-code-agent", "config.env
 
 const DEFAULT_CONFIG_ENV_CONTENT = `# Bridge 基础配置
 BRIDGE_DEVICE_ID=local-dev
-BRIDGE_DEBUG_PORT=8788
 
 # 飞书应用凭据
 FEISHU_APP_ID=cli_xxx
@@ -30,9 +29,6 @@ WORKSPACE_DEFAULT_CWD=
 
 # 可选：ask | read-auto | read-write-auto
 WORKSPACE_APPROVAL_MODE=ask
-
-# 可选：云端桥接 ws 地址（不使用可留空）
-BRIDGE_WS_URL=
 `;
 
 function parseEnvFile(content: string): EnvMap {
@@ -147,13 +143,9 @@ export async function loadConfig(): Promise<BridgeConfig> {
   const approvalMode =
     (getValue("WORKSPACE_APPROVAL_MODE") as "ask" | "read-auto" | "read-write-auto" | undefined) ??
     "ask";
-  const debugPortRaw = getValue("BRIDGE_DEBUG_PORT");
-  const debugPort = debugPortRaw ? Number.parseInt(debugPortRaw, 10) : 8788;
 
   return {
     deviceId: getValue("BRIDGE_DEVICE_ID") ?? "local-dev",
-    wsUrl: getValue("BRIDGE_WS_URL"),
-    debugPort: Number.isNaN(debugPort) ? 8788 : debugPort,
     feishu:
       appId && appSecret
         ? {

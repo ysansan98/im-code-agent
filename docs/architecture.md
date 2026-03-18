@@ -88,13 +88,7 @@
 - 由 Bridge 主动连出更符合“纯本地执行”的约束
 - WebSocket 更适合推送流式输出和任务状态
 
-本地 HTTP 仅保留少量调试接口，例如：
-
-- `GET /health`
-- `POST /debug/tasks`
-- `POST /debug/approvals/:id`
-
-这些接口不作为正式生产入口。
+Bridge 不提供本地 debug HTTP 入口，统一通过飞书事件触发任务。
 
 ## 核心时序
 
@@ -249,9 +243,6 @@ src/
   index.ts
   config/
     load-config.ts
-  server/
-    ws-client.ts
-    debug-http-server.ts
   session/
     session-manager.ts
     task-runner.ts
@@ -272,11 +263,6 @@ src/
 
 模块职责：
 
-- `ws-client`
-  - 管理到飞书机器人服务的长连接
-  - 发送和接收结构化消息
-- `debug-http-server`
-  - 提供本地调试接口
 - `session-manager`
   - 创建、查询、取消任务
   - 保证单工作区串行
@@ -325,8 +311,6 @@ src/
 ```ts
 export type BridgeConfig = {
   deviceId: string;
-  wsUrl: string;
-  debugPort?: number;
   agents: {
     codex?: {
       command: string;
@@ -424,31 +408,9 @@ export type TaskApprovalRequestedEvent = {
 - 方便未来增加本地调试页
 - 输出、审批、状态都能走同一条消息通道
 
-## WebSocket 消息边界
+## 飞书事件边界
 
-正式环境建议分成两类消息：
-
-Bridge 接收：
-
-- `task.create`
-- `task.cancel`
-- `approval.decision`
-- `ping`
-
-Bridge 发送：
-
-- `bridge.register`
-- `bridge.ready`
-- `task.started`
-- `task.output`
-- `task.approval_requested`
-- `task.approval_resolved`
-- `task.completed`
-- `task.failed`
-- `task.cancelled`
-- `pong`
-
-这里的消息模型应保持接近 `BridgeEvent`，不要为飞书单独定义一套完全不同的结构。
+当前实现不再包含云端桥接 WebSocket 协议，入口统一为飞书事件（`im.message.receive_v1`）和卡片回调。
 
 ## 审批模型
 
@@ -545,7 +507,7 @@ export type PolicyDecision =
 3. ACP adapter 最小集成
    - 能启动、能收输出、能退出
 4. 本地调试入口
-   - 不接飞书，先本地验证任务链路
+   - 仅保留飞书路径，不再维护本地 HTTP 调试入口
 5. 审批闭环
    - 先本地模拟审批
 6. 飞书接入

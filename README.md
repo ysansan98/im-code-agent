@@ -15,29 +15,13 @@
 
 详细方案见 [docs/architecture.md](./docs/architecture.md)。
 
-## 本地调试
+## 启动路径
 
-启动 Bridge：
+当前仅保留一条入口路径：
 
-```bash
-vp run dev
-```
+- 飞书直连：通过飞书消息事件触发任务。
 
-默认会启动本地调试服务：
-
-- `GET http://127.0.0.1:8788/health`
-- `GET http://127.0.0.1:8788/debug/workspaces`
-- `POST http://127.0.0.1:8788/debug/tasks`
-
-最小调试请求示例：
-
-```bash
-curl -X POST http://127.0.0.1:8788/debug/tasks \
-  -H 'content-type: application/json' \
-  -d '{"prompt":"Reply with exactly OK"}'
-```
-
-默认 workspace 指向 Bridge 启动目录（`process.cwd()`），默认 agent 为 `codex`。
+不再提供本地 debug HTTP 入口。
 
 ## 飞书直连
 
@@ -48,7 +32,6 @@ curl -X POST http://127.0.0.1:8788/debug/tasks \
 ```bash
 # Bridge 基础配置
 BRIDGE_DEVICE_ID=local-dev
-BRIDGE_DEBUG_PORT=8788
 
 # 飞书应用凭据
 FEISHU_APP_ID=cli_xxx
@@ -63,9 +46,6 @@ WORKSPACE_DEFAULT_CWD=
 
 # 可选：ask | read-auto | read-write-auto
 WORKSPACE_APPROVAL_MODE=ask
-
-# 可选：云端桥接 ws 地址（不使用可留空）
-BRIDGE_WS_URL=
 ```
 
 也支持环境变量覆盖（优先级高于配置文件）：
