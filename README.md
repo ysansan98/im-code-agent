@@ -20,7 +20,7 @@
 启动 Bridge：
 
 ```bash
-cd apps/bridge && vp run dev
+vp run dev
 ```
 
 默认会启动本地调试服务：
@@ -87,7 +87,7 @@ export FEISHU_VERIFICATION_TOKEN=xxx
 启动：
 
 ```bash
-cd apps/bridge && vp run dev
+vp run dev
 ```
 
 运行后，机器人收到文本消息会触发：
@@ -138,10 +138,8 @@ vp install
 vp check
 ```
 
-运行聚合脚本：
+运行测试：
 
 ```bash
-vp run ready
+vp test
 ```
-
-当前仓库还没有测试文件，等 `apps/bridge` 和 `packages/shared` 落地后再补 `vp test`。

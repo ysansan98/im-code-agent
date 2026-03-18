@@ -1,17 +1,50 @@
 {
   "name": "im-code-agent",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Bridge service for controlling local coding agents from Feishu.",
+  "license": "MIT",
+  "bin": {
+    "im-code-agent": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "config.env.example"
+  ],
   "type": "module",
+  "imports": {
+    "#shared": "./src/shared/index.ts"
+  },
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./cli": "./dist/cli.mjs",
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "ready": "vp check",
+    "build": "vp pack",
+    "dev": "vp exec tsx src/cli.ts",
+    "test": "vp test",
+    "check": "vp check",
+    "prepublishOnly": "vp run build",
     "prepare": "vp config"
   },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "@zed-industries/codex-acp": "^0.9.5"
+  },
   "devDependencies": {
-    "vite-plus": "catalog:"
+    "@types/node": "^24.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite-plus": "^0.1.11"
   },
   "engines": {
     "node": ">=22.12.0"
   },
-  "packageManager": "pnpm@10.32.1"
+  "packageManager": "pnpm@10.32.1",
+  "pnpm": {
+    "overrides": {
+      "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+      "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
+    }
+  }
 }

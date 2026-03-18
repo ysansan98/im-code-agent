@@ -4,5 +4,19 @@ export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
-  lint: { options: { typeAware: true, typeCheck: true } },
+  pack: {
+    entry: {
+      index: "src/index.ts",
+      cli: "src/cli.ts",
+    },
+    dts: true,
+    exports: true,
+  },
+  lint: {
+    options: {
+      typeAware: true,
+      typeCheck: true,
+    },
+  },
+  fmt: {},
 });
