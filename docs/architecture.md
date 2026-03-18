@@ -2,7 +2,7 @@
 
 ## 目标
 
-通过飞书机器人在手机或桌面端发起开发任务，由用户本地电脑上的 Bridge 服务驱动本地 ACP adapter 和本地安装的 `codex` / `claude-code` 执行任务。
+通过飞书机器人在手机或桌面端发起开发任务，由用户本地电脑上的 Bridge 服务驱动本地 ACP adapter 和本地安装的 `codex` 执行任务。
 
 约束：
 
@@ -28,7 +28,7 @@
   -> 本地 Bridge
   -> stdio (ACP)
   -> ACP adapter
-  -> codex / claude-code
+  -> codex
 ```
 
 设计原则：
@@ -73,7 +73,7 @@
 - 但它不是当前架构里的固定组成部分
 - 当前实现应优先围绕“Bridge 对接 ACP adapter”建模，而不是把 `acpx` 写死进核心架构
 
-### codex / claude-code
+### codex
 
 - 实际执行编码任务
 - 通过 ACP 被驱动
@@ -102,7 +102,7 @@ sequenceDiagram
     participant BFF as 飞书机器人服务
     participant WS as 本地 Bridge
     participant ACP as ACP adapter
-    participant AG as codex / claude-code
+    participant AG as codex
 
     Note over WS,BFF: Bridge 启动后主动建立 WebSocket 长连接
 
@@ -325,7 +325,6 @@ export type BridgeConfig = {
     name: string;
     cwd: string;
     approvalMode: "ask" | "read-auto" | "read-write-auto";
-    allowedAgents: Array<"codex" | "claude-code">;
   }>;
 };
 ```
@@ -335,7 +334,6 @@ export type BridgeConfig = {
 - `workspace` 必须预注册
 - 飞书侧只能引用 `workspaceId`
 - `cwd` 不允许由飞书自由传入
-- 每个工作区单独约束允许的 agent
 
 ## 任务模型
 
@@ -351,7 +349,7 @@ export type TaskStatus =
 export type Task = {
   id: string;
   workspaceId: string;
-  agent: "codex" | "claude-code";
+  agent: "codex";
   prompt: string;
   cwd: string;
   status: TaskStatus;

@@ -116,12 +116,6 @@ async function createConfigEnvIfMissing(targetPath: string, baseDir: string): Pr
     return;
   }
 
-  const legacyTemplatePath = resolve(baseDir, "bridge.env.example");
-  if (await fileExists(legacyTemplatePath)) {
-    await copyFile(legacyTemplatePath, targetPath);
-    return;
-  }
-
   await writeFile(targetPath, DEFAULT_CONFIG_ENV_CONTENT, "utf8");
 }
 
@@ -157,7 +151,6 @@ export async function loadConfig(): Promise<BridgeConfig> {
         id: "local-default",
         name: "Local Default",
         cwd: defaultCwd,
-        allowedAgents: ["codex"],
       },
     ],
   };

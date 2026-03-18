@@ -1,6 +1,6 @@
 # IM Code Agent
 
-通过飞书机器人控制本地电脑上的 `codex` / `claude-code` 执行开发任务。执行链路保持本地化，由本地 Bridge 服务驱动本地 ACP adapter / agent 进程，并将流式输出和审批请求同步到飞书。
+通过飞书机器人控制本地电脑上的 `codex` 执行开发任务。执行链路保持本地化，由本地 Bridge 服务驱动本地 ACP adapter / agent 进程，并将流式输出和审批请求同步到飞书。
 
 ## 当前状态
 

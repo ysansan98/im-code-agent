@@ -1,4 +1,4 @@
-export type AgentType = "codex" | "claude-code";
+export type AgentType = "codex";
 
 export type AgentCommandConfig = {
   command: string;

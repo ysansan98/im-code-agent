@@ -64,17 +64,6 @@ export type AgentEvent =
       text: string;
     }
   | {
-      type: "agent.available_commands";
-      taskId: string;
-      commands: SessionUpdateNotification["update"]["availableCommands"];
-    }
-  | {
-      type: "agent.usage";
-      taskId: string;
-      used?: number;
-      size?: number;
-    }
-  | {
       type: "agent.approval_requested";
       taskId: string;
       request: ApprovalRequest;
@@ -841,23 +830,6 @@ export class AgentProcess {
         type: "agent.output",
         taskId,
         text: update.content.text,
-      });
-    }
-
-    if (update?.sessionUpdate === "available_commands_update") {
-      this.onEvent?.({
-        type: "agent.available_commands",
-        taskId,
-        commands: update.availableCommands,
-      });
-    }
-
-    if (update?.sessionUpdate === "usage_update") {
-      this.onEvent?.({
-        type: "agent.usage",
-        taskId,
-        used: update.used,
-        size: update.size,
       });
     }
 

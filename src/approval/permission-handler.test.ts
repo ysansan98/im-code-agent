@@ -11,7 +11,6 @@ const workspace: WorkspaceConfig = {
   id: "w1",
   name: "w1",
   cwd: "/repo",
-  allowedAgents: ["codex"],
 };
 
 const logger = {
