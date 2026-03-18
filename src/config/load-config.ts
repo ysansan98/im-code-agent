@@ -14,7 +14,6 @@ type EnvMap = Record<string, string>;
 const DEFAULT_CONFIG_ENV_PATH = resolve(homedir(), ".im-code-agent", "config.env");
 
 const DEFAULT_CONFIG_ENV_CONTENT = `# Bridge 基础配置
-BRIDGE_DEVICE_ID=local-dev
 
 # 飞书应用凭据
 FEISHU_APP_ID=cli_xxx
@@ -145,7 +144,6 @@ export async function loadConfig(): Promise<BridgeConfig> {
     "ask";
 
   return {
-    deviceId: getValue("BRIDGE_DEVICE_ID") ?? "local-dev",
     feishu:
       appId && appSecret
         ? {

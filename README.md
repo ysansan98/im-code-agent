@@ -31,7 +31,6 @@
 
 ```bash
 # Bridge 基础配置
-BRIDGE_DEVICE_ID=local-dev
 
 # 飞书应用凭据
 FEISHU_APP_ID=cli_xxx

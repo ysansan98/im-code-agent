@@ -19,7 +19,6 @@ export type FeishuConfig = {
 };
 
 export type BridgeConfig = {
-  deviceId: string;
   feishu?: FeishuConfig;
   agents: Partial<Record<AgentType, AgentCommandConfig>>;
   workspaces: WorkspaceConfig[];

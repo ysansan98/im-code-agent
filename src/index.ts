@@ -44,7 +44,6 @@ export async function startBridge(): Promise<void> {
   }
 
   logger.info("bridge started", {
-    deviceId: config.deviceId,
     workspaceCount: config.workspaces.length,
     feishuEnabled: Boolean(feishuGateway),
   });

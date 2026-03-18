@@ -310,7 +310,6 @@ src/
 
 ```ts
 export type BridgeConfig = {
-  deviceId: string;
   agents: {
     codex?: {
       command: string;
