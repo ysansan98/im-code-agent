@@ -33,8 +33,8 @@
 # Bridge 基础配置
 
 # 飞书应用凭据
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
 
 # 可选：true 时默认 Full Access
 YOLO_MODE=false
@@ -53,10 +53,23 @@ export FEISHU_APP_SECRET=xxx
 export YOLO_MODE=false
 ```
 
+如果启动时未检测到有效的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`：
+
+- 交互终端下会提示并引导输入，输入后自动写回配置文件
+- 非交互环境下会直接报错退出，避免以不可用状态启动
+
 启动：
 
 ```bash
 vp run dev
+```
+
+指定配置文件路径启动：
+
+```bash
+vp exec tsx src/cli.ts --config /absolute/path/to/config.env
+# 或
+vp exec tsx src/cli.ts -c /absolute/path/to/config.env
 ```
 
 运行后，机器人收到文本消息会触发：

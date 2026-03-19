@@ -73,22 +73,27 @@ describe("loadConfig", () => {
     process.chdir(projectDir);
     process.env.BRIDGE_ENV_PATH = envPath;
 
-    const config = await loadConfig();
-    const written = await readFile(envPath, "utf8");
-    const resolvedProjectDir = await realpath(projectDir);
+    await expect(loadConfig()).rejects.toThrow(/未检测到飞书配置|缺少飞书配置/);
 
-    expect(written).toContain("FEISHU_APP_ID=cli_xxx");
-    expect(written).toContain("FEISHU_APP_SECRET=xxx");
+    const written = await readFile(envPath, "utf8");
+
+    expect(written).toContain("FEISHU_APP_ID=");
+    expect(written).toContain("FEISHU_APP_SECRET=");
     expect(written).toContain("YOLO_MODE=false");
-    expect(config.feishu).toEqual({
-      appId: "cli_xxx",
-      appSecret: "xxx",
-    });
-    expect(Object.keys(config.agents)).toEqual(["codex"]);
-    expect(config.workspaces[0]).toMatchObject({
-      id: "local-default",
-      name: "Local Default",
-      cwd: resolvedProjectDir,
-    });
+  });
+
+  test("treats placeholder feishu credentials as missing", async () => {
+    const projectDir = await createTempProject();
+    const envPath = join(projectDir, "config.env");
+
+    await writeFile(
+      envPath,
+      ["FEISHU_APP_ID=cli_xxx", "FEISHU_APP_SECRET=xxx", "YOLO_MODE=false"].join("\n"),
+      "utf8",
+    );
+    process.chdir(projectDir);
+    process.env.BRIDGE_ENV_PATH = envPath;
+
+    await expect(loadConfig()).rejects.toThrow(/未检测到飞书配置|缺少飞书配置/);
   });
 });
