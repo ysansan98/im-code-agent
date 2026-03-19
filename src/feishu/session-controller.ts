@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 
-import type { WorkspaceConfig } from "#shared";
+import type { SessionModelInfo, SessionModelState, WorkspaceConfig } from "#shared";
 
 import { FileSessionStateStore, type SessionStateStore } from "../session/session-state-store.ts";
 import { TaskRunner } from "../session/task-runner.ts";
@@ -16,8 +17,11 @@ export type ChatAccessMode = "standard" | "full-access";
 
 export class FeishuSessionController {
   readonly #chatCwds = new Map<string, string>();
+  readonly #chatBridgeSessionIds = new Map<string, string>();
   readonly #chatSessionIds = new Map<string, string>();
   readonly #chatAccessModes = new Map<string, ChatAccessMode>();
+  readonly #chatCurrentModelIds = new Map<string, string>();
+  readonly #chatAvailableModels = new Map<string, SessionModelInfo[]>();
   readonly #defaultAccessMode: ChatAccessMode;
 
   constructor(
@@ -40,6 +44,9 @@ export class FeishuSessionController {
         this.#chatCwds.set(chatId, fallbackCwd);
         sanitized = true;
       }
+    }
+    for (const [chatId, bridgeSessionId] of persisted.chatBridgeSessionIds.entries()) {
+      this.#chatBridgeSessionIds.set(chatId, bridgeSessionId);
     }
     for (const [chatId, sessionId] of persisted.chatSessionIds.entries()) {
       this.#chatSessionIds.set(chatId, sessionId);
@@ -79,17 +86,26 @@ export class FeishuSessionController {
     return this.#chatSessionIds.get(chatId);
   }
 
+  getBridgeSessionId(chatId: string): string | undefined {
+    return this.#chatBridgeSessionIds.get(chatId);
+  }
+
   async setSessionId(chatId: string, sessionId: string | undefined): Promise<void> {
     if (!sessionId) {
+      this.#chatBridgeSessionIds.delete(chatId);
       this.#chatSessionIds.delete(chatId);
     } else {
+      this.#chatBridgeSessionIds.set(chatId, randomUUID());
       this.#chatSessionIds.set(chatId, sessionId);
     }
     await this.persist();
   }
 
   async clearSession(chatId: string): Promise<void> {
+    this.#chatBridgeSessionIds.delete(chatId);
     this.#chatSessionIds.delete(chatId);
+    this.#chatCurrentModelIds.delete(chatId);
+    this.#chatAvailableModels.delete(chatId);
     await this.persist();
   }
 
@@ -103,6 +119,38 @@ export class FeishuSessionController {
 
   getAccessOverride(chatId: string): ChatAccessMode | undefined {
     return this.#chatAccessModes.get(chatId);
+  }
+
+  getModel(chatId: string): string | undefined {
+    return this.#chatCurrentModelIds.get(chatId);
+  }
+
+  async setModel(chatId: string, model: string, taskRunner: TaskRunner): Promise<boolean> {
+    if (!taskRunner.hasConversation(chatId)) {
+      return false;
+    }
+    if (this.getModel(chatId) === model) {
+      return false;
+    }
+    const updated = await taskRunner.setConversationModel(chatId, model);
+    if (!updated) {
+      return false;
+    }
+    const models = taskRunner.getConversationModels(chatId);
+    this.updateModelState(chatId, models);
+    return true;
+  }
+
+  getAvailableModels(chatId: string): SessionModelInfo[] {
+    return this.#chatAvailableModels.get(chatId) ?? [];
+  }
+
+  updateModelState(chatId: string, state?: SessionModelState): void {
+    if (!state) {
+      return;
+    }
+    this.#chatCurrentModelIds.set(chatId, state.currentModelId);
+    this.#chatAvailableModels.set(chatId, state.availableModels);
   }
 
   async setAccessMode(
@@ -136,7 +184,9 @@ export class FeishuSessionController {
     if (!taskRunner.isConversationRunning(chatId)) {
       return false;
     }
-    await this.resetConversation(chatId, taskRunner, { keepAccessOverride: true });
+    await this.resetConversation(chatId, taskRunner, {
+      keepAccessOverride: true,
+    });
     return true;
   }
 
@@ -146,7 +196,10 @@ export class FeishuSessionController {
     options?: { keepAccessOverride?: boolean },
   ): Promise<void> {
     await taskRunner.resetConversation(chatId);
+    this.#chatBridgeSessionIds.delete(chatId);
     this.#chatSessionIds.delete(chatId);
+    this.#chatCurrentModelIds.delete(chatId);
+    this.#chatAvailableModels.delete(chatId);
     if (!options?.keepAccessOverride) {
       this.#chatAccessModes.delete(chatId);
     }
@@ -173,7 +226,9 @@ export class FeishuSessionController {
       nextWorkspace,
       options.agent,
     );
+    this.updateModelState(options.chatId, conversation.models);
 
+    this.#chatBridgeSessionIds.set(options.chatId, randomUUID());
     this.#chatSessionIds.set(options.chatId, conversation.sessionId);
     await this.persist();
 
@@ -208,6 +263,7 @@ export class FeishuSessionController {
   private async persist(): Promise<void> {
     await this.stateStore.saveState({
       chatCwds: this.#chatCwds,
+      chatBridgeSessionIds: this.#chatBridgeSessionIds,
       chatSessionIds: this.#chatSessionIds,
     });
   }

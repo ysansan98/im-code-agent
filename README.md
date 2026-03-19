@@ -81,8 +81,12 @@ vp exec tsx src/cli.ts -c /absolute/path/to/config.env
 
 会话命令：
 
+- `/help`：展示支持指令
 - `/new`：重置当前聊天会话（保留当前工作目录）
 - `/new <path>`：重置会话并切换工作目录（支持绝对路径，或相对当前目录）
+- `/model`：查看当前模型并通过交互卡片切换
+- `/model <name>`：直接切换到指定模型
+- `/status`：查看当前会话状态
 - `/stop` 或 `/interrupt`：立即打断当前执行中的任务
 - `/perm`：查看并通过交互卡片切换权限模式
 

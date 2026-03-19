@@ -65,8 +65,22 @@ export type NewSessionParams = {
   mcpServers: unknown[];
 };
 
+export type SessionModelInfo = {
+  id: string;
+  name: string;
+  description?: string;
+};
+
+export type SessionModelState = {
+  currentModelId: string;
+  availableModels: SessionModelInfo[];
+};
+
 export type NewSessionResult = {
   sessionId: string;
+  modes?: unknown[];
+  models?: SessionModelState;
+  configOptions?: unknown[];
 };
 
 export type LoadSessionParams = {
@@ -77,9 +91,16 @@ export type LoadSessionParams = {
 
 export type LoadSessionResult = {
   modes?: unknown[];
-  models?: unknown[];
+  models?: SessionModelState;
   configOptions?: unknown[];
 };
+
+export type SetSessionModelParams = {
+  sessionId: string;
+  modelId: string;
+};
+
+export type SetSessionModelResult = Record<string, never>;
 
 export type PromptParams = {
   sessionId: string;

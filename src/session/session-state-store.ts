@@ -4,11 +4,13 @@ import { dirname, resolve } from "node:path";
 
 type SessionStateData = {
   chatCwds?: Record<string, string>;
+  chatBridgeSessionIds?: Record<string, string>;
   chatSessionIds?: Record<string, string>;
 };
 
 export type SessionState = {
   chatCwds: Map<string, string>;
+  chatBridgeSessionIds: Map<string, string>;
   chatSessionIds: Map<string, string>;
 };
 
@@ -27,12 +29,14 @@ export class FileSessionStateStore implements SessionStateStore {
     if (!raw) {
       return {
         chatCwds: new Map(),
+        chatBridgeSessionIds: new Map(),
         chatSessionIds: new Map(),
       };
     }
     const parsed = JSON.parse(raw) as SessionStateData;
     return {
       chatCwds: new Map(Object.entries(parsed.chatCwds ?? {})),
+      chatBridgeSessionIds: new Map(Object.entries(parsed.chatBridgeSessionIds ?? {})),
       chatSessionIds: new Map(Object.entries(parsed.chatSessionIds ?? {})),
     };
   }
@@ -40,6 +44,7 @@ export class FileSessionStateStore implements SessionStateStore {
   async saveState(state: SessionState): Promise<void> {
     const payload: SessionStateData = {
       chatCwds: Object.fromEntries(state.chatCwds.entries()),
+      chatBridgeSessionIds: Object.fromEntries(state.chatBridgeSessionIds.entries()),
       chatSessionIds: Object.fromEntries(state.chatSessionIds.entries()),
     };
     const dir = dirname(this.filePath);

@@ -25,6 +25,9 @@ export class FeishuCardActionHandler {
   readonly #permissionCardRevisions = new Map<string, number>();
   readonly #permissionCardUpdatedAt = new Map<string, number>();
   readonly #handledPermissionCardIds = new Map<string, number>();
+  readonly #modelCardMessages = new Map<string, string>();
+  readonly #modelCardUpdatedAt = new Map<string, number>();
+  readonly #handledModelCardIds = new Map<string, number>();
   readonly #handledCardActionEventIds = new Map<string, number>();
 
   constructor(private readonly deps: CardActionHandlerDeps) {}
@@ -58,6 +61,30 @@ export class FeishuCardActionHandler {
     });
   }
 
+  async sendModelCard(chatId: string): Promise<void> {
+    this.gcModelCardState();
+    const cardId = randomUUID();
+    const card = this.deps.cardRenderer.buildModelCard({
+      cardId,
+      chatId,
+      currentModel: this.deps.sessionController.getModel(chatId),
+      models: this.deps.sessionController.getAvailableModels(chatId),
+      readonly: false,
+    });
+
+    const messageId = await this.deps.messageClient.sendCard(chatId, card);
+    this.#modelCardMessages.set(cardId, messageId);
+    this.#modelCardUpdatedAt.set(cardId, Date.now());
+
+    this.deps.logger.info("model card sent", {
+      chatId,
+      cardId,
+      messageId,
+      currentModel: this.deps.sessionController.getModel(chatId),
+      models: this.deps.sessionController.getAvailableModels(chatId).map((item) => item.id),
+    });
+  }
+
   async handleCardAction(
     data: Record<string, unknown>,
   ): Promise<Record<string, unknown> | undefined> {
@@ -87,6 +114,10 @@ export class FeishuCardActionHandler {
       return this.handleAccessAction(action, data);
     }
 
+    if (action.type === "model") {
+      return this.handleModelAction(action, data);
+    }
+
     const decision: ApprovalDecision = {
       requestId: action.requestId,
       taskId: action.taskId,
@@ -99,6 +130,64 @@ export class FeishuCardActionHandler {
     this.deps.approvalGateway.resolve(decision);
     this.deps.onApprovalResolved(decision);
     return undefined;
+  }
+
+  private async handleModelAction(
+    action: Extract<ReturnType<typeof parseCardActionValue>, { type: "model" }>,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined> {
+    this.gcHandledModelCardIds();
+
+    const chatId = action.chatId;
+    const actionMessageId = this.extractActionMessageId(data);
+    const availableModels = this.deps.sessionController.getAvailableModels(chatId);
+    if (availableModels.length > 0 && !availableModels.some((item) => item.id === action.model)) {
+      this.deps.logger.warn("model card action ignored: unsupported model", {
+        chatId,
+        cardId: action.cardId,
+        model: action.model,
+      });
+      return undefined;
+    }
+
+    if (this.#handledModelCardIds.has(action.cardId)) {
+      this.deps.logger.info("model card action ignored: card already locked", {
+        chatId,
+        cardId: action.cardId,
+        messageId: actionMessageId,
+      });
+      return undefined;
+    }
+
+    this.#handledModelCardIds.set(action.cardId, Date.now());
+
+    try {
+      await this.deps.sessionController.setModel(chatId, action.model, this.deps.taskRunner);
+      this.deps.logger.info("model card action applied", {
+        chatId,
+        cardId: action.cardId,
+        model: action.model,
+      });
+    } catch (error) {
+      this.#handledModelCardIds.delete(action.cardId);
+      this.deps.logger.warn("model card action failed, unlock card", {
+        chatId,
+        cardId: action.cardId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
+    const card = await this.updateModelCard(chatId, actionMessageId, action.cardId, true, false);
+    if (!card) {
+      return undefined;
+    }
+    return {
+      card: {
+        type: "raw",
+        data: card,
+      },
+    };
   }
 
   private async handleAccessAction(
@@ -252,6 +341,48 @@ export class FeishuCardActionHandler {
     }
   }
 
+  private async updateModelCard(
+    chatId: string,
+    messageId?: string,
+    cardId?: string,
+    lockAfterPatch = false,
+    patch = true,
+  ): Promise<Record<string, unknown> | undefined> {
+    this.gcModelCardState();
+    const resolvedCardId = cardId ?? randomUUID();
+    this.#modelCardUpdatedAt.set(resolvedCardId, Date.now());
+    const card = this.deps.cardRenderer.buildModelCard({
+      cardId: resolvedCardId,
+      chatId,
+      currentModel: this.deps.sessionController.getModel(chatId),
+      models: this.deps.sessionController.getAvailableModels(chatId),
+      readonly: lockAfterPatch,
+    });
+    const targetMessageId = messageId ?? this.#modelCardMessages.get(resolvedCardId);
+    if (!targetMessageId) {
+      this.deps.logger.warn("model card update skipped: message id not found", {
+        chatId,
+        cardId: resolvedCardId,
+      });
+      return undefined;
+    }
+
+    try {
+      this.#modelCardMessages.set(resolvedCardId, targetMessageId);
+      if (patch) {
+        await this.deps.messageClient.patchCard(targetMessageId, card);
+      }
+      return card;
+    } catch (error) {
+      this.deps.logger.warn("patch model card failed", {
+        chatId,
+        messageId: targetMessageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   private extractOperatorId(data: Record<string, unknown>): string {
     const operator =
       data.operator && typeof data.operator === "object"
@@ -355,6 +486,16 @@ export class FeishuCardActionHandler {
     }
   }
 
+  private gcHandledModelCardIds(): void {
+    const expireMs = 10 * 60_000;
+    const now = Date.now();
+    for (const [cardId, ts] of this.#handledModelCardIds.entries()) {
+      if (now - ts > expireMs) {
+        this.#handledModelCardIds.delete(cardId);
+      }
+    }
+  }
+
   private gcPermissionCardState(): void {
     const expireMs = 24 * 60 * 60 * 1000;
     const now = Date.now();
@@ -363,6 +504,17 @@ export class FeishuCardActionHandler {
         this.#permissionCardUpdatedAt.delete(cardId);
         this.#permissionCardRevisions.delete(cardId);
         this.#permissionCardMessages.delete(cardId);
+      }
+    }
+  }
+
+  private gcModelCardState(): void {
+    const expireMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    for (const [cardId, ts] of this.#modelCardUpdatedAt.entries()) {
+      if (now - ts > expireMs) {
+        this.#modelCardUpdatedAt.delete(cardId);
+        this.#modelCardMessages.delete(cardId);
       }
     }
   }

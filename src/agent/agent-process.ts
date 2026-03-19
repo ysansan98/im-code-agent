@@ -17,6 +17,8 @@ import type {
   NewSessionResult,
   PromptParams,
   PromptResult,
+  SetSessionModelParams,
+  SetSessionModelResult,
   JsonRpcFailure,
   JsonRpcId,
   JsonRpcMessage,
@@ -309,9 +311,11 @@ export class AgentProcess {
     };
   }
 
-  async start(
-    options: AgentRunOptions,
-  ): Promise<{ initialization: AgentInitialization; sessionId: string }> {
+  async start(options: AgentRunOptions): Promise<{
+    initialization: AgentInitialization;
+    sessionId: string;
+    models?: LoadSessionResult["models"];
+  }> {
     if (this.#children.has(options.taskId)) {
       throw new Error(`Task is already running: ${options.taskId}`);
     }
@@ -388,9 +392,10 @@ export class AgentProcess {
     const initialization = await this.initialize(options.taskId);
     agentChild.initialization = initialization;
     let sessionId: string;
+    let loadResult: LoadSessionResult | NewSessionResult;
     if (options.resumeSessionId) {
       try {
-        await this.loadSession(options.taskId, options.resumeSessionId, options.cwd);
+        loadResult = await this.loadSession(options.taskId, options.resumeSessionId, options.cwd);
         sessionId = options.resumeSessionId;
         this.logger.info("agent session resumed", {
           taskId: options.taskId,
@@ -404,10 +409,12 @@ export class AgentProcess {
           error: error instanceof Error ? error.message : String(error),
         });
         const session = await this.newSession(options.taskId, options.cwd);
+        loadResult = session;
         sessionId = session.sessionId;
       }
     } else {
       const session = await this.newSession(options.taskId, options.cwd);
+      loadResult = session;
       sessionId = session.sessionId;
     }
     agentChild.sessionId = sessionId;
@@ -423,6 +430,7 @@ export class AgentProcess {
     return {
       initialization,
       sessionId,
+      models: loadResult.models,
     };
   }
 
@@ -486,6 +494,24 @@ export class AgentProcess {
     };
 
     return this.sendRequest<PromptParams, PromptResult>(taskId, "session/prompt", params);
+  }
+
+  async setSessionModel(taskId: string, modelId: string): Promise<void> {
+    const agentChild = this.getChild(taskId);
+    if (!agentChild.sessionId) {
+      throw new Error(`Agent session not initialized for task: ${taskId}`);
+    }
+
+    const params: SetSessionModelParams = {
+      sessionId: agentChild.sessionId,
+      modelId,
+    };
+
+    await this.sendRequest<SetSessionModelParams, SetSessionModelResult>(
+      taskId,
+      "session/set_model",
+      params,
+    );
   }
 
   private async newSession(taskId: string, cwd: string): Promise<NewSessionResult> {

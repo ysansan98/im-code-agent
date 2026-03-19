@@ -12,8 +12,9 @@ import { ApprovalGateway } from "../approval/approval-gateway.ts";
 import type { TaskRunner } from "../session/task-runner.ts";
 import type { Logger } from "../utils/logger.ts";
 import { shouldPatchApprovalSummary } from "./approval-card-policy.ts";
-import { isInterruptCommand, parseContent, parseUserCommand } from "./command-router.ts";
+import { parseContent, parseUserCommand } from "./command-router.ts";
 import { FeishuCardRenderer, TaskCardStreamer } from "./card-renderer.ts";
+import { FeishuCommandHandler } from "./command-handler.ts";
 import { buildFeishuEventDispatcher } from "./feishu-event-dispatcher.ts";
 import { MessageEntryQueue } from "./message-entry-queue.ts";
 import { FeishuCardActionHandler } from "./feishu-card-action-handler.ts";
@@ -37,10 +38,11 @@ type ApprovalCardBinding = {
 };
 
 function buildCodexRuntimeArgs(mode: ChatAccessMode): string[] {
-  if (mode !== "full-access") {
-    return [];
+  const args: string[] = [];
+  if (mode === "full-access") {
+    args.push("-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"');
   }
-  return ["-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"'];
+  return args;
 }
 
 export class FeishuGateway {
@@ -51,6 +53,7 @@ export class FeishuGateway {
   readonly #cardRenderer = new FeishuCardRenderer();
   readonly #messageClient: FeishuMessageClient;
   readonly #cardActionHandler: FeishuCardActionHandler;
+  readonly #commandHandler: FeishuCommandHandler;
   readonly #approvalCards = new Map<string, ApprovalCardBinding>();
   readonly #patchMinIntervalMs = 280;
 
@@ -82,6 +85,12 @@ export class FeishuGateway {
       onApprovalResolved: (decision) => {
         void this.patchApprovalCardByDecision(decision);
       },
+    });
+    this.#commandHandler = new FeishuCommandHandler({
+      sessionController: this.#sessionController,
+      cardActionHandler: this.#cardActionHandler,
+      messageClient: this.#messageClient,
+      taskRunner: this.taskRunner,
     });
 
     this.#wsClient = new lark.WSClient({
@@ -117,27 +126,6 @@ export class FeishuGateway {
     this.#messageQueue.gcHandledMessageIds();
 
     const messageId = data.message.message_id;
-    if (data.message.message_type === "text") {
-      const text = (parseContent(data.message.content).text ?? "").trim();
-      if (isInterruptCommand(text)) {
-        if (!this.#messageQueue.tryBegin(messageId)) {
-          this.logger.info("feishu duplicate message ignored", { messageId });
-          return;
-        }
-        void this.processInterruptCommand(data.message.chat_id)
-          .catch((error) => {
-            this.logger.error("feishu interrupt failed", {
-              messageId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            this.#messageQueue.complete(messageId);
-          });
-        return;
-      }
-    }
-
     const queue = this.#messageQueue.runInChatQueue(data.message.chat_id, messageId, async () => {
       await this.processMessage(data);
     });
@@ -189,26 +177,12 @@ export class FeishuGateway {
       return;
     }
 
-    if (command.type === "new") {
-      const next = await this.#sessionController.startNewConversation(
-        {
-          chatId,
-          workspace,
-          agent: "codex",
-          cwd: command.cwd,
-        },
-        this.taskRunner,
-      );
-
-      await this.#messageClient.sendText(
-        chatId,
-        `已切换到新会话，session_id: ${next.sessionId}\n工作目录：${next.workspace.cwd}`,
-      );
-      return;
-    }
-
-    if (command.type === "show-access") {
-      await this.#cardActionHandler.sendPermissionCard(chatId);
+    const result = await this.#commandHandler.handle({
+      chatId,
+      workspace,
+      command,
+    });
+    if (result.type === "handled") {
       return;
     }
 
@@ -216,7 +190,7 @@ export class FeishuGateway {
       chatId,
       messageId: data.message.message_id,
       workspace,
-      prompt: command.prompt,
+      prompt: result.prompt,
     });
   }
 
@@ -262,6 +236,7 @@ export class FeishuGateway {
       ) {
         await this.#sessionController.setSessionId(params.chatId, result.sessionId);
       }
+      this.#sessionController.updateModelState(params.chatId, result.models);
 
       const failed = result.events.find(
         (event): event is Extract<BridgeEvent, { type: "task.failed" }> =>
@@ -342,15 +317,6 @@ export class FeishuGateway {
     if (event.type === "task.completed") {
       streamer.markCompleted(event.summary);
     }
-  }
-
-  private async processInterruptCommand(chatId: string): Promise<void> {
-    const interrupted = await this.#sessionController.interrupt(chatId, this.taskRunner);
-    if (!interrupted) {
-      await this.#messageClient.sendText(chatId, "当前没有执行中的任务。");
-      return;
-    }
-    await this.#messageClient.sendText(chatId, "已打断当前任务。");
   }
 
   private async sendApprovalCard(chatId: string, request: ApprovalRequest): Promise<void> {

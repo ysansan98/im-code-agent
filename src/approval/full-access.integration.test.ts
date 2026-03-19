@@ -82,6 +82,9 @@ function createHarness(): {
     prompt: async (): Promise<PromptResult> => {
       return { stopReason: "completed" };
     },
+    setSessionModel: async (): Promise<void> => {
+      return;
+    },
     stop: async (): Promise<void> => {
       return;
     },
