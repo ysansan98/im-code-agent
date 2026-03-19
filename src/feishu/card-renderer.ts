@@ -1,4 +1,4 @@
-import type { ApprovalDecision, ApprovalRequest } from "#shared";
+import type { ApprovalDecision, ApprovalRequest, SessionModelInfo } from "#shared";
 
 import type { Logger } from "../utils/logger.ts";
 
@@ -431,6 +431,77 @@ export class FeishuCardRenderer {
             text: {
               tag: "plain_text",
               content: "提示：会话覆盖仅当前会话有效，切换/重置会话后恢复默认。",
+              text_size: "cus-0",
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  buildModelCard(params: {
+    cardId: string;
+    chatId: string;
+    currentModel?: string;
+    models: SessionModelInfo[];
+    readonly?: boolean;
+    readonlyReason?: string;
+  }): Record<string, unknown> {
+    const modelRows: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < params.models.length; index += 3) {
+      const items = params.models.slice(index, index + 3);
+      modelRows.push({
+        tag: "column_set",
+        columns: items.map((model) =>
+          this.buildActionButton(
+            model.id === params.currentModel ? `${model.name}（当前）` : model.name,
+            model.id === params.currentModel ? "primary" : "default",
+            {
+              type: "model",
+              cardId: params.cardId,
+              chatId: params.chatId,
+              model: model.id,
+            },
+          ),
+        ),
+      });
+    }
+
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+      },
+      body: {
+        direction: "vertical",
+        padding: "10px 12px 10px 12px",
+        elements: [
+          {
+            tag: "markdown",
+            content: "**模型切换**",
+          },
+          {
+            tag: "markdown",
+            content: `当前模型: ${this.escapeCardMarkdown(params.currentModel ?? "未设置")}`,
+          },
+          {
+            tag: "markdown",
+            content: `可选模型: ${this.escapeCardMarkdown(params.models.map((item) => item.id).join(", "))}`,
+          },
+          ...(params.readonly
+            ? [
+                {
+                  tag: "markdown",
+                  content: params.readonlyReason ?? "本卡已应用变更，按钮已锁定。",
+                },
+              ]
+            : [...modelRows]),
+          {
+            tag: "div",
+            text: {
+              tag: "plain_text",
+              content: "提示：切换模型会重置当前会话，后续消息使用新模型。",
               text_size: "cus-0",
             },
           },

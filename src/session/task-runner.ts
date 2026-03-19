@@ -1,4 +1,11 @@
-import type { AgentType, BridgeEvent, CreateTaskInput, Task, WorkspaceConfig } from "#shared";
+import type {
+  AgentType,
+  BridgeEvent,
+  CreateTaskInput,
+  SessionModelState,
+  Task,
+  WorkspaceConfig,
+} from "#shared";
 
 import { AgentProcess, AgentProcessError, type AgentEvent } from "../agent/agent-process.ts";
 import type { Logger } from "../utils/logger.ts";
@@ -22,6 +29,7 @@ type ConversationState = {
   cwd: string;
   sessionId: string;
   runtimeArgs: string[];
+  models?: SessionModelState;
 };
 
 function sameRuntimeArgs(left: string[], right: string[]): boolean {
@@ -135,7 +143,12 @@ export class TaskRunner {
     input: CreateTaskInput,
     workspace: WorkspaceConfig,
     options?: StartTaskOptions,
-  ): Promise<{ taskId: string; events: BridgeEvent[]; sessionId?: string }> {
+  ): Promise<{
+    taskId: string;
+    events: BridgeEvent[];
+    sessionId?: string;
+    models?: SessionModelState;
+  }> {
     const state = await this.ensureConversation(
       conversationId,
       workspace,
@@ -194,6 +207,7 @@ export class TaskRunner {
       cwd: workspace.cwd,
       sessionId: started.sessionId,
       runtimeArgs: options?.runtimeArgs ?? [],
+      models: started.models,
     };
     this.#taskRuntimeArgs.set(task.id, state.runtimeArgs);
     this.#conversations.set(conversationId, state);
@@ -213,7 +227,12 @@ export class TaskRunner {
     state: ConversationState,
     prompt: string,
     options?: StartTaskOptions,
-  ): Promise<{ taskId: string; events: BridgeEvent[]; sessionId?: string }> {
+  ): Promise<{
+    taskId: string;
+    events: BridgeEvent[];
+    sessionId?: string;
+    models?: SessionModelState;
+  }> {
     this.#runningConversations.add(conversationId);
     const result = await this.runPrompt(
       state.taskId,
@@ -231,6 +250,7 @@ export class TaskRunner {
     return {
       ...result,
       sessionId: state.sessionId,
+      models: state.models,
     };
   }
 
@@ -253,6 +273,29 @@ export class TaskRunner {
 
   isConversationRunning(conversationId: string): boolean {
     return this.#runningConversations.has(conversationId);
+  }
+
+  hasConversation(conversationId: string): boolean {
+    return this.#conversations.has(conversationId);
+  }
+
+  async setConversationModel(conversationId: string, modelId: string): Promise<boolean> {
+    const state = this.#conversations.get(conversationId);
+    if (!state) {
+      return false;
+    }
+    await this.agentProcess.setSessionModel(state.taskId, modelId);
+    if (state.models) {
+      state.models = {
+        ...state.models,
+        currentModelId: modelId,
+      };
+    }
+    return true;
+  }
+
+  getConversationModels(conversationId: string): SessionModelState | undefined {
+    return this.#conversations.get(conversationId)?.models;
   }
 
   getTask(taskId: string): Task | undefined {

@@ -11,8 +11,21 @@ export type UserCommand =
       prompt: string;
     }
   | {
+      type: "help";
+    }
+  | {
       type: "new";
       cwd?: string;
+    }
+  | {
+      type: "model";
+      model?: string;
+    }
+  | {
+      type: "status";
+    }
+  | {
+      type: "stop";
     }
   | {
       type: "show-access";
@@ -41,7 +54,17 @@ export type AccessCardActionValue =
       action: "clear";
     };
 
-export type CardActionValue = ApprovalCardActionValue | AccessCardActionValue;
+export type ModelCardActionValue = {
+  type: "model";
+  cardId: string;
+  chatId: string;
+  model: string;
+};
+
+export type CardActionValue =
+  | ApprovalCardActionValue
+  | AccessCardActionValue
+  | ModelCardActionValue;
 
 export function isInterruptCommand(text: string): boolean {
   return text === "/stop" || text === "/interrupt";
@@ -59,9 +82,41 @@ export async function parseUserCommand(
   rawPrompt: string,
   currentCwd: string,
 ): Promise<UserCommand> {
+  if (rawPrompt === "/help") {
+    return {
+      type: "help",
+    };
+  }
+
+  if (rawPrompt === "/status") {
+    return {
+      type: "status",
+    };
+  }
+
+  if (rawPrompt === "/stop" || rawPrompt === "/interrupt") {
+    return {
+      type: "stop",
+    };
+  }
+
   if (rawPrompt === "/perm") {
     return {
       type: "show-access",
+    };
+  }
+
+  if (rawPrompt === "/model") {
+    return {
+      type: "model",
+    };
+  }
+
+  if (rawPrompt.startsWith("/model ")) {
+    const model = rawPrompt.slice(7).trim();
+    return {
+      type: "model",
+      model: model || undefined,
     };
   }
 
@@ -134,6 +189,20 @@ export function parseCardActionValue(data: Record<string, unknown>): CardActionV
       };
     }
     return null;
+  }
+
+  if (
+    item.type === "model" &&
+    typeof item.cardId === "string" &&
+    typeof item.chatId === "string" &&
+    typeof item.model === "string"
+  ) {
+    return {
+      type: "model",
+      cardId: item.cardId,
+      chatId: item.chatId,
+      model: item.model,
+    };
   }
 
   if (
