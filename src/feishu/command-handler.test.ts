@@ -8,7 +8,6 @@ const workspace: WorkspaceConfig = {
   id: "local-default",
   name: "Local Default",
   cwd: "/tmp",
-  allowedAgents: ["codex"],
 };
 
 describe("FeishuCommandHandler", () => {
