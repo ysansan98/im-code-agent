@@ -7,14 +7,38 @@ export type Logger = {
 };
 
 function log(level: LogLevel, message: string, context?: Record<string, unknown>): void {
-  const entry = {
-    level,
-    message,
-    ...(context ? { context } : {}),
-    timestamp: new Date().toISOString(),
-  };
+  const timestamp = new Date().toISOString();
+  const levelLabel = level.toUpperCase();
+  const contextText = context ? ` ${formatContext(context)}` : "";
 
-  console[level](JSON.stringify(entry));
+  console.log(`[${timestamp}] ${levelLabel} ${message}${contextText}`);
+}
+
+function formatContext(context: Record<string, unknown>): string {
+  return Object.entries(context)
+    .map(([key, value]) => `${key}=${stringifyValue(value)}`)
+    .join(" ");
+}
+
+function stringifyValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined) {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable]";
+  }
 }
 
 export function createLogger(): Logger {
