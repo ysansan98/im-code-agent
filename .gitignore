@@ -29,3 +29,9 @@ apps/bridge/.im-code-agent/
 
 # Local docs not tracked
 feishu-docs/
+LOCAL_DEVOPS.md
+
+# Local production ops scripts
+scripts/im-prod.sh
+scripts/pm2.im-code-agent-prod.config.cjs
+config.env

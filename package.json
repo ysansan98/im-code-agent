@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "vp pack",
-    "dev": "vp exec tsx src/cli.ts",
+    "dev": "vp exec tsx src/cli.ts --config ./config.env",
     "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build",
