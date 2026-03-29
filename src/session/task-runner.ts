@@ -1,6 +1,7 @@
 import type {
   AgentType,
   BridgeEvent,
+  ContentBlock,
   CreateTaskInput,
   SessionModelState,
   Task,
@@ -15,6 +16,7 @@ type StartTaskOptions = {
   onEvent?: (event: BridgeEvent) => void | Promise<void>;
   resumeSessionId?: string;
   runtimeArgs?: string[];
+  promptBlocks?: ContentBlock[];
 };
 
 type EnsureConversationOptions = {
@@ -85,7 +87,11 @@ export class TaskRunner {
         timestamp: new Date().toISOString(),
       });
 
-      const promptResult = await this.agentProcess.prompt(task.id, task.prompt);
+      const promptResult = await this.agentProcess.prompt(
+        task.id,
+        task.prompt,
+        options?.promptBlocks,
+      );
 
       this.logger.info("task started", {
         taskId: task.id,
@@ -391,7 +397,7 @@ export class TaskRunner {
     });
 
     try {
-      const promptResult = await this.agentProcess.prompt(taskId, prompt);
+      const promptResult = await this.agentProcess.prompt(taskId, prompt, options?.promptBlocks);
       this.recordEvent(taskId, {
         type: "task.completed",
         taskId,

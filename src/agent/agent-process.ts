@@ -9,6 +9,7 @@ import type {
   AgentInitialization,
   AgentType,
   BridgeConfig,
+  ContentBlock,
   InitializeParams,
   InitializeResult,
   LoadSessionParams,
@@ -477,7 +478,11 @@ export class AgentProcess {
     return this.sendRequest<InitializeParams, InitializeResult>(taskId, "initialize", params);
   }
 
-  async prompt(taskId: string, promptText: string): Promise<PromptResult> {
+  async prompt(
+    taskId: string,
+    promptText: string,
+    promptBlocks?: ContentBlock[],
+  ): Promise<PromptResult> {
     const agentChild = this.getChild(taskId);
     if (!agentChild.sessionId) {
       throw new Error(`Agent session not initialized for task: ${taskId}`);
@@ -485,12 +490,15 @@ export class AgentProcess {
 
     const params: PromptParams = {
       sessionId: agentChild.sessionId,
-      prompt: [
-        {
-          type: "text",
-          text: promptText,
-        },
-      ],
+      prompt:
+        promptBlocks && promptBlocks.length > 0
+          ? promptBlocks
+          : [
+              {
+                type: "text",
+                text: promptText,
+              },
+            ],
     };
 
     return this.sendRequest<PromptParams, PromptResult>(taskId, "session/prompt", params);

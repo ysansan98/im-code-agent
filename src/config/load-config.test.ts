@@ -6,7 +6,13 @@ import { afterEach, describe, expect, test } from "vite-plus/test";
 
 import { loadConfig } from "./load-config.ts";
 
-const ENV_KEYS = ["BRIDGE_ENV_PATH", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "YOLO_MODE"] as const;
+const ENV_KEYS = [
+  "BRIDGE_ENV_PATH",
+  "FEISHU_APP_ID",
+  "FEISHU_APP_SECRET",
+  "YOLO_MODE",
+  "IMAGE_TEXT_MERGE_WINDOW_MS",
+] as const;
 
 const originalCwd = process.cwd();
 const originalEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -58,6 +64,7 @@ describe("loadConfig", () => {
       appSecret: "secret_test",
     });
     expect(config.yoloMode).toBe(true);
+    expect(config.imageTextMergeWindowMs).toBe(10000);
     expect(Object.keys(config.agents)).toEqual(["codex"]);
     expect(config.workspaces[0]).toMatchObject({
       id: "local-default",
@@ -80,6 +87,28 @@ describe("loadConfig", () => {
     expect(written).toContain("FEISHU_APP_ID=");
     expect(written).toContain("FEISHU_APP_SECRET=");
     expect(written).toContain("YOLO_MODE=false");
+    expect(written).toContain("IMAGE_TEXT_MERGE_WINDOW_MS=10000");
+  });
+
+  test("supports overriding image text merge window", async () => {
+    const projectDir = await createTempProject();
+    const envPath = join(projectDir, "config.env");
+
+    await writeFile(
+      envPath,
+      [
+        "FEISHU_APP_ID=cli_test",
+        "FEISHU_APP_SECRET=secret_test",
+        "YOLO_MODE=false",
+        "IMAGE_TEXT_MERGE_WINDOW_MS=15000",
+      ].join("\n"),
+      "utf8",
+    );
+    process.chdir(projectDir);
+    process.env.BRIDGE_ENV_PATH = envPath;
+
+    const config = await loadConfig();
+    expect(config.imageTextMergeWindowMs).toBe(15000);
   });
 
   test("treats placeholder feishu credentials as missing", async () => {

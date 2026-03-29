@@ -26,6 +26,7 @@ dist-ssr
 # Local bridge runtime/config
 apps/bridge/bridge.env
 apps/bridge/.im-code-agent/
+.im-code-agent/
 
 # Local docs not tracked
 feishu-docs/

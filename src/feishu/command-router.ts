@@ -3,6 +3,8 @@ import { isAbsolute, resolve } from "node:path";
 
 export type FeishuMessageContent = {
   text?: string;
+  image_key?: string;
+  [key: string]: unknown;
 };
 
 export type UserCommand =
@@ -76,6 +78,97 @@ export function parseContent(content: string): FeishuMessageContent {
   } catch {
     return {};
   }
+}
+
+export function extractPromptFromMessage(messageType: string, content: string): string {
+  const parsed = parseContent(content);
+  if (messageType === "text") {
+    const text = typeof parsed.text === "string" ? parsed.text.trim() : "";
+    return text || content.trim();
+  }
+
+  if (messageType === "image") {
+    const imageKey = typeof parsed.image_key === "string" ? parsed.image_key : "";
+    if (imageKey) {
+      return `【飞书图片】image_key=${imageKey}\n请根据这张图片继续处理。如果需要先进行 OCR 或内容描述，请先明确说明。`;
+    }
+    return content.trim();
+  }
+
+  if (messageType === "post") {
+    const postText = extractPostText(parsed).trim();
+    return postText || content.trim();
+  }
+
+  return "";
+}
+
+function extractPostText(payload: Record<string, unknown>): string {
+  const primary = resolvePostLocale(payload);
+  if (!primary) {
+    return "";
+  }
+  const lines: string[] = [];
+  const title = typeof primary.title === "string" ? primary.title.trim() : "";
+  if (title) {
+    lines.push(title);
+  }
+
+  const paragraphs = Array.isArray(primary.content) ? primary.content : [];
+  for (const paragraph of paragraphs) {
+    if (!Array.isArray(paragraph)) {
+      continue;
+    }
+    const chunk: string[] = [];
+    for (const node of paragraph) {
+      if (!node || typeof node !== "object") {
+        continue;
+      }
+      const item = node as Record<string, unknown>;
+      const tag = typeof item.tag === "string" ? item.tag : "";
+      if (tag === "text" || tag === "a") {
+        const text = typeof item.text === "string" ? item.text : "";
+        if (text.trim()) {
+          chunk.push(text);
+        }
+        continue;
+      }
+      if (tag === "at") {
+        const mention =
+          typeof item.user_name === "string"
+            ? item.user_name.trim()
+            : typeof item.user_id === "string"
+              ? item.user_id.trim()
+              : "";
+        if (mention) {
+          chunk.push(`@${mention}`);
+        }
+      }
+    }
+    const line = chunk.join("");
+    if (line) {
+      lines.push(line);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function resolvePostLocale(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const locales = ["zh_cn", "en_us", "ja_jp"];
+  for (const locale of locales) {
+    const value = payload[locale];
+    if (value && typeof value === "object") {
+      const post = value as Record<string, unknown>;
+      if (Array.isArray(post.content) || typeof post.title === "string") {
+        return post;
+      }
+    }
+  }
+  if (Array.isArray(payload.content) || typeof payload.title === "string") {
+    return payload;
+  }
+  return null;
 }
 
 export async function parseUserCommand(

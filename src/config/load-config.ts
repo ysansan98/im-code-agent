@@ -25,6 +25,9 @@ YOLO_MODE=false
 
 # 可选：默认工作目录，不填则使用 bridge 启动目录
 WORKSPACE_DEFAULT_CWD=
+
+# 可选：图片后等待文本的合并窗口（毫秒）
+IMAGE_TEXT_MERGE_WINDOW_MS=10000
 `;
 
 function parseEnvFile(content: string): EnvMap {
@@ -82,6 +85,18 @@ function normalizeCredential(value: string | undefined): string | undefined {
     return undefined;
   }
   return trimmed;
+}
+
+function parseImageTextMergeWindowMs(value: string | undefined): number {
+  const raw = value?.trim();
+  if (!raw) {
+    return 10000;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 10000;
+  }
+  return parsed;
 }
 
 async function resolveNodeCommand(): Promise<string> {
@@ -227,6 +242,9 @@ export async function loadConfig(): Promise<BridgeConfig> {
   }
 
   const yoloMode = getValue("YOLO_MODE")?.trim().toLowerCase() === "true";
+  const imageTextMergeWindowMs = parseImageTextMergeWindowMs(
+    getValue("IMAGE_TEXT_MERGE_WINDOW_MS"),
+  );
   const workspaceDefaultCwd = getValue("WORKSPACE_DEFAULT_CWD")?.trim();
   const resolvedDefaultCwd = workspaceDefaultCwd ? resolve(workspaceDefaultCwd) : process.cwd();
   const defaultCwd = (await isDirectory(resolvedDefaultCwd)) ? resolvedDefaultCwd : process.cwd();
@@ -237,6 +255,7 @@ export async function loadConfig(): Promise<BridgeConfig> {
       appSecret,
     },
     yoloMode,
+    imageTextMergeWindowMs,
     agents: {
       codex: {
         command: nodeCommand,

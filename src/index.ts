@@ -44,6 +44,7 @@ export async function startBridge(): Promise<void> {
         approvalGateway,
         logger,
         config.yoloMode,
+        config.imageTextMergeWindowMs,
       )
     : undefined;
 
@@ -55,5 +56,6 @@ export async function startBridge(): Promise<void> {
     workspaceCount: config.workspaces.length,
     feishuEnabled: Boolean(feishuGateway),
     yoloMode: config.yoloMode,
+    imageTextMergeWindowMs: config.imageTextMergeWindowMs,
   });
 }

@@ -14,6 +14,7 @@ export type FeishuConfig = {
 export type BridgeConfig = {
   feishu?: FeishuConfig;
   yoloMode: boolean;
+  imageTextMergeWindowMs: number;
   agents: Partial<Record<AgentType, AgentCommandConfig>>;
   workspaces: WorkspaceConfig[];
 };
