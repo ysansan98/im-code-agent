@@ -653,9 +653,6 @@ export class FeishuCardRenderer {
     tools: Map<string, ToolView>,
   ): Array<Record<string, unknown>> {
     const elements: Array<Record<string, unknown>> = [];
-    const maxToolCards = 12;
-    let renderedToolCards = 0;
-    let hiddenToolCards = 0;
     let lastToolPath: string | undefined;
     let lastToolSignature: string | undefined;
     let index = 0;
@@ -697,12 +694,6 @@ export class FeishuCardRenderer {
           continue;
         }
         lastToolSignature = signature;
-
-        if (renderedToolCards >= maxToolCards) {
-          hiddenToolCards += 1;
-          index += 1;
-          continue;
-        }
 
         const cardElements: Array<Record<string, unknown>> = [
           {
@@ -750,7 +741,6 @@ export class FeishuCardRenderer {
           margin: "4px 0 4px 0",
           elements: cardElements,
         });
-        renderedToolCards += 1;
         index += 1;
       }
 
@@ -766,12 +756,6 @@ export class FeishuCardRenderer {
           elements: toolCards,
         });
       }
-    }
-    if (hiddenToolCards > 0) {
-      elements.push({
-        tag: "markdown",
-        content: `…已折叠 ${hiddenToolCards} 条工具调用`,
-      });
     }
     return elements;
   }
